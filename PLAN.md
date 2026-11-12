@@ -17,6 +17,10 @@ Store / Retrieve / Process still exist, mapped to RAG:
 
 ## 1. Scope
 
+**Hard requirement R0: one command to set up, one command to test.** A reviewer with only
+Python 3.12 runs `./run.sh` and gets every service up, 10 tenants seeded, and a passing
+smoke test. `./run.sh test` proves every claim below. Details in §18.
+
 | # | Property | Depth |
 |---|---|---|
 | F1 | Tenant isolation + encryption context | Full. Per-tenant index + KMS policy condition + AAD |
@@ -203,6 +207,10 @@ so they are fast and offline.
 5. Query path + in-memory index + egress guard + mock LLM. Poisoned-doc tests (A3).
 6. Rotation job (resumable) + containment + revoke/crypto-shred tests.
 7. Seed 10 tenants + concurrent load test; README (threat model, migration, AI usage).
+8. `run.sh` + Makefile + attack report (§18). Verify from a fresh clone in a clean folder.
+
+R0 is built in from milestone 1: each milestone adds its tests to `./run.sh test`
+and must pass from a clean checkout before the next starts.
 
 ## 12. Least-sure calls
 
@@ -362,3 +370,52 @@ Tests:
 - Logout of one session leaves the user's other sessions working.
 - Tenant freeze kills all that tenant's sessions; other tenants unaffected.
 - Expired / revoked / tampered tokens rejected with the same generic 401.
+
+## 18. Reviewer experience (R0)
+
+Goal: a reviewer clones the repo, runs one command, and can see and test everything.
+
+Only prerequisite: **Python 3.12** (macOS or Linux). No Docker, AWS account, or API keys.
+
+| Command | What it does | Time target |
+|---|---|---|
+| `./run.sh` | Setup (if needed) + seed + start all services + smoke test + print login info | < 5 min first run, < 20 s after |
+| `./run.sh test` | Full test suite incl. all attacker suites, no services needed | < 2 min |
+| `./run.sh attack` | Runs A1–A4 against the live services, prints a pass/fail report | < 1 min |
+| `./run.sh demo` | Guided walkthrough: ingest, query, rotate, revoke, contain, with output per step | < 1 min |
+| `./run.sh stop` | Stops all services | — |
+| `./run.sh reset` | Stops services, deletes all DBs, keys and seed data, keeps the venv | — |
+| `./run.sh verify` | `ruff` + `mypy --strict` + full tests (what CI would run) | < 3 min |
+
+`make <same-name>` targets wrap `run.sh` for people who prefer make.
+
+What `./run.sh` does, in order:
+
+```
+check python3.12 -> create .venv (uv if present, else venv+pip) -> install pinned deps
+  -> download spaCy model (once, cached) -> generate service + customer keys into .secrets/ (0600)
+  -> create 10 customer KMS accounts + CMKs + key policies -> onboarding probe per tenant
+  -> create users -> ingest synthetic docs -> start KMS :8100, mock LLM :8200, API :8000, worker
+  -> wait for /health on each -> run smoke test -> print table of tenants, users, passwords, URLs
+```
+
+Rules that make it work:
+- **Idempotent.** Running `./run.sh` twice changes nothing and does not reseed.
+- **Pinned deps.** `requirements.lock` generated from `pyproject.toml`; install uses it.
+- **Offline tests.** Tests use a hash embedder and in-process ASGI clients, temp dirs and
+  random ports. No network, no shared state, safe to run in parallel.
+- **No secrets in the repo.** All keys generated locally on first run into `.secrets/`
+  (gitignored). Seed passwords are random and printed once, plus written to
+  `.secrets/reviewer-credentials.txt`.
+- **Loopback only.** Every service binds `127.0.0.1`.
+- **Clear failures.** Each step prints `[ok]` or `[fail] <what> — <how to fix>`. Logs in
+  `.run/logs/<service>.log`.
+- **Explore by hand.** Swagger UI at `http://127.0.0.1:8000/docs` and `:8100/docs`.
+  `scripts/client.py` is a tiny CLI (`login`, `ingest`, `query`, `rotate`, `revoke`).
+- **Claim → test map.** README table links every security claim to the test that proves it.
+
+Optional second path: `docker compose up` (Dockerfile + compose shipped). Not tested on
+the author's machine (no Docker), stated in README. The native path is the supported one.
+
+Acceptance check for R0: on a fresh clone in a new folder, `./run.sh && ./run.sh test &&
+./run.sh attack` passes with no manual steps.
