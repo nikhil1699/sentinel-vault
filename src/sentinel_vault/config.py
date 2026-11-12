@@ -72,6 +72,31 @@ class Settings(BaseSettings):
     def auth_db_path(self) -> Path:
         return self.data_dir / "auth.db"
 
+    # --- M4/M5: keys, storage, privacy -------------------------------------------------
+    service_principal: str = "sentinel-svc"
+    kms_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
+    kms_max_retries: int = Field(default=2, ge=0, le=5)
+
+    embedder: Literal["hash", "fastembed"] = "hash"
+    pii_score_threshold: float = Field(default=0.35, ge=0.05, le=0.95)
+    chunk_chars: int = Field(default=800, ge=200, le=4000)
+    chunk_overlap_chars: int = Field(default=100, ge=0, le=1000)
+    max_text_chars: int = Field(default=200_000, ge=1_000, le=2_000_000)
+    max_fields: int = Field(default=100, ge=1, le=1000)
+
+    @property
+    def keyring_db_path(self) -> Path:
+        """Tenant -> CMK mapping, wrapped DEKs, data policies. No customer data here."""
+        return self.data_dir / "keyring.db"
+
+    @property
+    def vector_db_path(self) -> Path:
+        return self.data_dir / "vector.db"
+
+    @property
+    def vault_db_path(self) -> Path:
+        return self.data_dir / "vault.db"
+
     @field_validator("api_host")
     @classmethod
     def _loopback_only(cls, v: str) -> str:
