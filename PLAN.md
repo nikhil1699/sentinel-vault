@@ -207,6 +207,8 @@ Every milestone ends with a **gate**. The next milestone does not start until it
 3. `./run.sh verify` green: `ruff` + `mypy --strict` + all tests so far (no regressions).
 4. Fresh-clone check: `./run.sh reset && ./run.sh && ./run.sh test` passes.
 5. One commit (or a few) per milestone on the feature branch.
+6. After every **two** milestones: write `docs/summary-mX-mY.md` (what happened, decisions,
+   code changes, what works now, open points) and commit it.
 
 | M | Name | Builds | Unit tests (what they prove) |
 |---|---|---|---|
