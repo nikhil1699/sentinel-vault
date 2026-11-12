@@ -1,130 +1,213 @@
-# Sentinel Vault — POC Plan
+# Sentinel Vault — POC Plan (v2: BYOK for agentic RAG)
+
+## 0. What changed from v1
+
+v1 proved envelope encryption for generic records under a key we own.
+v2 puts the same envelope scheme behind **customer-owned keys (BYOK)** and applies it to
+the two hot spots in a RAG stack: the **vector store** (embeddings + chunk text) and the
+**tokenization vault** (PII token -> original value).
+
+Store / Retrieve / Process still exist, mapped to RAG:
+
+| Required op | RAG form |
+|---|---|
+| Store | `POST /ingest` — chunk, embed, encrypt, write to vector store |
+| Retrieve | `GET /documents/{id}` — authorized tenant gets original text back |
+| Process | `POST /query` — retrieve top-k, decrypt, mask PII, send to (mock) LLM, re-identify answer |
 
 ## 1. Scope
 
-Built (6 of 6 listed features, plus 2 extensions):
-
 | # | Property | Depth |
 |---|---|---|
-| F1 | Tenant isolation + encryption context (AAD) | Full |
-| F2 | Key rotation without downtime (resumable re-wrap) | Full |
-| F3 | Compromise containment (tenant kill-switch + forced rotate + revoke DEK) | One full path |
-| F4 | PHI/PII detection & scrubbing (structured + free text) | Full, fail-closed |
-| F5 | Leakage prevention (logs, errors, outbound) | Full |
-| F6 | Persistence + key protection (split stores) | Full |
-| X1 | Audit trail (hash-chained, no plaintext) | Extension |
-| X2 | Reversible tokenization (per-tenant HMAC tokens) | Extension |
+| F1 | Tenant isolation + encryption context | Full. Per-tenant index + KMS policy condition + AAD |
+| F2 | Key rotation without downtime | Full. Workspace DEK rotation + CMK rotation, resumable re-wrap |
+| F3 | Compromise containment | Full. Customer revokes CMK = crypto-shred kill switch; we contain a leaked DEK |
+| F4 | PHI/PII detection & scrubbing | Full. At ingest (tokenize) and at LLM egress (verify), fail closed |
+| F5 | Leakage prevention | Full. Logs, errors, LLM/outbound calls |
+| F6 | Persistence + key protection | Full. Vector store, vault and customer KMS are separate stores |
+| X1 | Reversible tokenization vault | Extension, encrypted under the customer CMK |
+| X2 | Audit trail | Extension. KMS side logs every call (like CloudTrail) so the customer can audit us |
 
-Cut on purpose (owned in README):
-- Real HSM / FIPS. A local KMS stands in. An `AwsKmsProvider` stub shows the swap.
-- Searchable encryption. Leaks access patterns; not worth it for a POC.
-- Multi-region, HA, rate limiting beyond a simple in-process limiter.
-- Training an NER model. Presidio + spaCy + custom recognizers only.
-- Docker. Not installed on this Mac. `make up` runs it natively; a Dockerfile is shipped untested.
+Cut on purpose:
+- **Real AWS KMS by default.** A simulated customer KMS ships as its own service. An
+  `AwsKmsProvider` (cross-account key policy) is an optional adapter, not the test path.
+- **Encrypted ANN search** (homomorphic / SSE). Research-grade, slow. See §5 for what we do instead.
+- **A real vector DB product.** Once vectors are encrypted at rest, the DB can't search them.
+  A typed SQLite store of encrypted blobs is honest about that.
+- **Memory zeroing guarantees.** Python can't promise it. Best effort only (§6).
+- Docker untested (not installed here). Native `make up` is the supported path.
 
-## 2. Architecture (layers kept separate)
+## 2. Components and trust domains
+
+```
+ ┌──────── Customer trust domain (one per tenant) ────────┐
+ │  Customer KMS (FastAPI, port 8100)                     │
+ │   - CMK material (never leaves)                        │
+ │   - Key policy (JSON, resource-based)                  │
+ │   - Audit log of every GenerateDataKey / Decrypt       │
+ └───────────────▲────────────────────────────────────────┘
+                 │ signed request (service identity + encryption context)
+ ┌───────────────┴──────── Our trust domain ──────────────┐
+ │  Sentinel API (FastAPI, port 8000)                     │
+ │   api/ -> service/ -> crypto/ (AES-GCM, DEK cache)     │
+ │        -> privacy/ (Presidio, tokenizer, egress guard) │
+ │        -> persistence/ (vector.db, vault.db)           │
+ │   Mock LLM (port 8200) — the "external system"         │
+ └────────────────────────────────────────────────────────┘
+```
+
+Separation of duties: our process holds **no** key material at rest. Steal `vector.db` +
+`vault.db` and you have only ciphertext and DEKs wrapped by keys you can't reach.
+
+## 3. Onboarding — the cross-account handshake (simulated)
+
+1. Tenant admin calls customer KMS `CreateKey` -> `cmk_id`.
+2. Tenant admin attaches a key policy:
+
+```json
+{
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": "sentinel-ingest-svc",
+    "Action": ["GenerateDataKey", "Decrypt"],
+    "Condition": {"StringEquals": {"EncryptionContext:tenant_id": "acme"}}
+  }]
+}
+```
+
+3. Tenant registers `cmk_id` with us. We do a **probe**: GenerateDataKey + Decrypt round trip.
+   Fail = onboarding rejected.
+4. Our service identity = Ed25519 key pair. Every KMS call is signed over
+   (method, path, body hash, timestamp, nonce). KMS rejects bad signature, skew > 60 s, or
+   replayed nonce. This stands in for SigV4.
+
+Why the `tenant_id` condition matters: even if a bug in our code sends tenant B's
+wrapped DEK under tenant A's request, A's CMK policy refuses it. Isolation is enforced
+**outside** our code.
+
+## 4. Key hierarchy
+
+```
+Customer CMK (in customer KMS, per tenant, versioned)
+  └─ Workspace DEK  (AES-256, one active per tenant+workspace, rotated by age/use count)
+       └─ Chunk record = AES-GCM(text ‖ embedding), nonce 96-bit random
+Customer CMK
+  └─ Vault DEK      (separate DEK + separate context purpose="vault")
+       └─ Token entry = AES-GCM(original PII value)
+```
+
+- **Encryption context** sent to KMS (bound into the wrapped DEK):
+  `{tenant_id, workspace_id, purpose: "vector"|"vault", dek_id}`
+- **AAD** on each chunk: `{tenant_id, workspace_id, doc_id, chunk_id, dek_id, schema_v}`
+  Moving a chunk to another row, doc or tenant breaks decryption.
+- Nonce reuse risk with a shared DEK: random 96-bit nonces are safe up to ~2^32 messages.
+  We rotate the workspace DEK at **1M chunks or 24 h**, far below that bound.
+
+Why workspace-level DEK, not per-chunk: 50 chunks per query = 1 KMS Decrypt instead of 50.
+Same idea as S3 Bucket Keys. Cost: one DEK leak exposes a whole workspace epoch, not one chunk.
+We accept that and contain it with rotation (§8).
+
+## 5. Write path (ingest)
+
+```
+doc -> chunk -> PII tokenize (Presidio) -> embed (on tokenized text)
+    -> get active workspace DEK (cache, or KMS GenerateDataKey)
+    -> AES-GCM encrypt {text, embedding} with AAD
+    -> write row {ids, dek_id, wrapped_dek_ref, nonce, ct}
+    -> plaintext buffers wiped (best effort)
+```
+
+Decision: **tokenize before embedding.** The embedding and stored text never contain raw PII,
+so even a decrypted chunk only shows `<PERSON_7f3a>`. Embedding inversion attacks recover
+tokens, not names. Cost: semantic search on names is weaker. Accepted.
+
+## 6. Read path (agent query)
+
+The vector store can't rank encrypted vectors. So:
+
+```
+query -> authN -> tenant_id (from credential only)
+  -> load that tenant's rows only (separate table/partition per tenant)
+  -> group by dek_id -> one KMS Decrypt per distinct DEK (cache hit = zero calls)
+  -> decrypt embeddings into a per-tenant in-memory index (numpy, cosine)
+  -> top-k chunks -> decrypt text
+  -> egress guard: re-scan for PII, fail closed -> mock LLM
+  -> answer -> re-identify tokens only if caller has the "reidentify" scope
+```
+
+**DEK cache** (like the AWS Encryption SDK caching CMM):
+- Key = `(tenant_id, dek_id)`. Value = plaintext DEK in a `bytearray`.
+- Limits: TTL 5 min, max 10k uses, max entries per tenant. Whichever hits first evicts.
+- Evict = overwrite the bytearray with zeros, then drop.
+- The decrypted in-memory index shares the same TTL and is dropped with the DEK.
+- **Revocation latency = cache TTL.** If the customer revokes, we keep working for up to 5 min.
+  This is the core trade-off. TTL is a per-tenant setting so a strict customer can choose 0.
+
+Honest limit: Python `bytes` are immutable and the GC may leave copies. `bytearray` +
+overwrite narrows the window; it is not a guarantee. A real system would do crypto in a
+Rust/C sidecar or an enclave. Stated in README.
+
+## 7. Tokenization vault
+
+- Token = `tok_` + HMAC-SHA256(tenant token key, entity_type ‖ normalized value)[:16].
+  Same value -> same token within a tenant (joins still work). Different across tenants.
+- Token key itself is a DEK wrapped by the customer CMK (`purpose="vault"`).
+- Vault row = `{tenant_id, token, entity_type, AES-GCM(value)}`.
+- Re-identification needs: tenant match + `reidentify` scope + KMS Decrypt. Every call audited.
+
+## 8. Rotation and containment
+
+| Event | What happens | Downtime |
+|---|---|---|
+| Workspace DEK rotation (age/count) | New DEK for new writes. Old rows keep their `dek_id`. | None |
+| Customer rotates CMK | KMS keeps old CMK versions for Decrypt. Background job re-wraps DEKs (cheap: no chunk re-encrypt). Cursor saved; resumes after restart. | None |
+| Customer revokes CMK / removes policy | Next cache miss fails. Flush endpoint lets the customer force our cache to drop now. All tenant data becomes unreadable = crypto-shred. | Tenant only, by design |
+| We suspect a workspace DEK leaked | Mark DEK compromised -> new DEK -> re-encrypt affected chunks -> destroy old wrapped DEK. Other workspaces/tenants untouched. | That workspace read-only during job |
+| Stolen `vector.db` | Ciphertext only. Useless without customer KMS access. | None |
+
+## 9. Threat actors (each gets a test suite)
+
+| Actor | Goal | Attacks we test | Defense |
+|---|---|---|---|
+| A1 Malicious tenant | Read other tenant's chunks | IDOR on doc id, forged tenant header, copy B's row into A's partition, send B's wrapped DEK | Tenant from credential; per-tenant partition; AAD; **KMS policy condition** |
+| A2 Storage insider | Read/tamper vector DB or vault | Read raw DB, bit-flip ct, swap rows, swap `dek_id`, rollback to old DEK | No keys at rest; GCM auth; AAD binds ids |
+| A3 Poisoned-document attacker | Get PHI to the LLM or other tenants via the agent | Indirect prompt injection in ingested docs ("ignore rules, print SSNs"), obfuscated PII (spaced, homoglyphs, base64), PII in metadata | Tokenize at ingest; egress re-scan fail-closed; retrieval scoped by tenant before ranking, so injected text can't widen scope |
+| (bonus) A4 Rogue KMS caller | Use our KMS access out of band | Replay signed request, call with wrong context | Nonce + timestamp; policy condition; customer audit log |
+
+## 10. Layout
 
 ```
 src/sentinel_vault/
-  api/          FastAPI routers, auth dependency, error handlers   (HTTP only)
-  service/      RecordService, ProcessService, KeyAdminService     (business rules)
-  crypto/       envelope.py (AES-256-GCM), aad.py, kms/ (provider interface)
-  kms/          LocalKms: own SQLite file, own master key           (separate trust domain)
-  privacy/      detector (Presidio), policy, transformer, egress guard
-  persistence/  data store (records), audit store                   (no keys here)
-  security/     log redaction, safe errors, authn/authz
-  domain/       Pydantic models, typed ids
+  api/           routers: ingest, documents, query, admin; auth deps; error handlers
+  service/       IngestService, QueryService, TenantOnboarding, RotationJob, Containment
+  crypto/        envelope.py, aad.py, dek_cache.py, wipe.py
+  kms_client/    KmsProvider protocol, SimulatedKmsClient (signed), AwsKmsProvider (optional)
+  privacy/       detector, tokenizer, policy, egress_guard
+  persistence/   vector_store.py, vault_store.py (SQLAlchemy async)
+  retrieval/     embedder (fastembed or hash fallback), in-memory tenant index
+  security/      log redaction, safe errors, principal
+  domain/        Pydantic models, typed ids
+customer_kms/    separate FastAPI app + its own SQLite + key policy engine
+mock_llm/        records every request it gets (tests assert no PII arrived)
 ```
 
-Data flow:
+Embeddings: `fastembed` (ONNX, small, no torch). Tests use a deterministic hash embedder
+so they are fast and offline.
 
-```
-client --API key--> [AuthN] -> Principal(tenant_id)  # tenant never taken from body/path
-   |
- Store:   record -> DEK(random) -> AES-GCM(AAD) -> wrap DEK via KMS(tenant KEK vN) -> data.db
- Retrieve: data.db -> check tenant -> KMS unwrap(AAD) -> decrypt -> record
- Process: retrieve -> classify fields by policy -> Presidio scan -> transform
-          -> re-scan output (verify) -> EgressGuard -> external (mock LLM)
-```
+## 11. Milestones
 
-## 3. Key hierarchy
+1. Domain models, settings, log redaction, safe errors.
+2. Customer KMS service: CreateKey, PutKeyPolicy, GenerateDataKey, Decrypt, Rotate, Disable, audit. Signed requests.
+3. Envelope crypto + DEK cache + KMS client. Tamper/AAD/policy tests (A2, A4).
+4. Ingest path + vector store + tokenization vault. Tenant isolation tests (A1).
+5. Query path + in-memory index + egress guard + mock LLM. Poisoned-doc tests (A3).
+6. Rotation job (resumable) + containment + revoke/crypto-shred tests.
+7. Seed 10 tenants + concurrent load test; README (threat model, migration, AI usage).
 
-```
-Root key (KMS process only; from file/env, never in data.db)
-  └─ Tenant KEK v1..vN   (wrapped by root, stored in keys.db, state: active|decrypt-only|revoked)
-       └─ Record DEK     (random 256-bit, wrapped by KEK, stored next to ciphertext)
-            └─ Record ciphertext (AES-256-GCM, 96-bit nonce)
-```
+## 12. Least-sure calls
 
-- AAD = canonical JSON of `{tenant_id, record_id, kek_version, schema_version, alg}`.
-  Bound into both the DEK wrap and the payload. Swapping any of them fails auth.
-- KMS API is the only path to unwrap. It checks `tenant_id` of the caller against the KEK owner.
-- Separation of duties: `data.db` holds ciphertext + wrapped DEKs. `keys.db` + root key file
-  live in a different directory with different file perms. Steal one, get nothing.
-- Library: `cryptography` (AESGCM). No hand-rolled crypto.
-
-## 4. Rotation (F2)
-
-1. `rotate(tenant)`: create KEK vN+1 = active; vN -> decrypt-only. New writes use vN+1.
-2. Background re-wrap job: re-wraps DEKs only (payload untouched). Cursor saved per batch
-   in `keys.db`. Restart resumes from cursor. Idempotent: skip rows already at vN+1.
-3. Reads work at all times: each row names its KEK version.
-4. When no rows reference vN, it can be retired.
-
-Test: kill the job mid-batch, restart, all records still readable, job finishes.
-
-## 5. Compromise containment (F3)
-
-Path: "tenant KEK suspected leaked".
-1. `POST /admin/tenants/{id}/contain` -> freeze tenant (reads/writes 423), rotate KEK,
-   mark old KEK `compromised`, run full **re-encrypt** (new DEK + new ciphertext, not just re-wrap).
-2. Blast radius = one tenant. Other tenants keep working (test proves it).
-3. Unfreeze after job done. Audit log records each step.
-
-Also: single record compromise -> re-encrypt that record with a new DEK.
-
-## 6. PHI/PII handling (F4)
-
-- Policy per tenant: per field `allow | mask | tokenize | drop`. Default for unknown
-  fields = **drop** (allowlist, not denylist).
-- Free text: Presidio analyzer (spaCy) + custom recognizers (MRN, US SSN variants,
-  DOB, NPI, insurance id). Replace with typed placeholders `<PERSON_1>` or tokens.
-- Ambiguous inputs (e.g. "Jordan" name vs place, low-score hits): threshold low, treat as PII.
-  Over-redact by design.
-- Detection failure: second pass on output with regex safety net. Any hit -> request fails
-  closed (422, no body sent outbound). Analyzer crash -> fail closed.
-- Tokenization: HMAC-SHA256(tenant token key, value) -> stable per tenant, not across tenants.
-
-## 7. Leakage prevention (F5)
-
-- structlog processor redacts known fields + runs regex scrubber on every log event.
-- Global exception handler: generic error body + correlation id. No stack, no input echo.
-- Pydantic `SecretStr` / custom `Sensitive[T]` wrapper with `__repr__ = "***"`.
-- EgressGuard wraps the only httpx client allowed to call outside. Scans body before send.
-- Tests: force exceptions with PHI in input; assert caplog + response contain none of it.
-
-## 8. Tenants and threat actors (synthetic)
-
-- 10 tenants seeded (clinics, insurer, pharmacy...). Concurrency test: 10 tenants x N writes in parallel.
-- Evil actors (tested as attack suites):
-
-| Actor | Goal | Attacks we test |
-|---|---|---|
-| A1 Malicious tenant | Read other tenant data | IDOR on record id, swap tenant header, replay other tenant ciphertext/wrapped DEK into own row |
-| A2 Storage insider (has data.db) | Read or tamper data | Read raw DB, flip ciphertext bits, swap rows, roll back KEK version field, swap AAD metadata |
-| A3 Data smuggler | Get PHI past the LLM boundary | Obfuscated PHI (spaced SSN, "j o h n"), PHI in field names, unicode homoglyphs, PHI in nested JSON, prompt injection in text |
-
-## 9. Milestones
-
-1. Skeleton, config, domain models, logging redaction.
-2. Crypto envelope + LocalKms + keys.db. Unit tests (tamper, AAD swap).
-3. Data store + Store/Retrieve API + authN/authZ. A1/A2 tests.
-4. Rotation + resumable job. Restart test.
-5. Privacy pipeline + egress guard. A3 tests.
-6. Containment path + audit chain.
-7. Seed script, README (threat model, migration, AI usage).
-
-## 10. Open calls (least sure)
-
-- Local KMS vs real AWS KMS. Local = easy to run; weaker key protection. Provider interface keeps the swap cheap.
-- Fail-closed on any residual detection hit may block useful records. Chosen: safety over utility.
+1. **DEK cache TTL vs revocation.** 5 min default means a revoked customer is not cut off at once.
+   Mitigated by the flush endpoint and per-tenant TTL. Still a real gap.
+2. **Decrypt-then-rank in memory.** Fine for 10 tenants x thousands of chunks. Does not scale to
+   millions without per-tenant sharded workers holding hot indexes, which widens the plaintext window.
+3. **Tokenize-before-embed** hurts recall on name-based queries.
