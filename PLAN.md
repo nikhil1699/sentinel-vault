@@ -196,7 +196,7 @@ so they are fast and offline.
 
 ## 11. Milestones
 
-1. Domain models, settings, log redaction, safe errors.
+1. Domain models, settings, log redaction, safe errors, auth + sessions (§17).
 2. Customer KMS service: CreateKey, PutKeyPolicy, GenerateDataKey, Decrypt, Rotate, Disable, audit. Signed requests.
 3. Envelope crypto + DEK cache + KMS client. Tamper/AAD/policy tests (A2, A4).
 4. Ingest path + vector store + tokenization vault. Tenant isolation tests (A1).
@@ -211,3 +211,154 @@ so they are fast and offline.
 2. **Decrypt-then-rank in memory.** Fine for 10 tenants x thousands of chunks. Does not scale to
    millions without per-tenant sharded workers holding hot indexes, which widens the plaintext window.
 3. **Tokenize-before-embed** hurts recall on name-based queries.
+
+## 13. Services
+
+| Service | Port | Owner | Job |
+|---|---|---|---|
+| Sentinel API | 8000 | Us | Login, sessions, ingest, query, get document, admin |
+| Rotation worker | — | Us | Re-wrap / re-encrypt jobs. Resumes after a crash |
+| Customer KMS | 8100 | Customer | CMKs, key policy, audit log |
+| Mock LLM | 8200 | External | Records every request it gets |
+| Customer simulator | CLI | Test | Plays the 10 customers |
+| Attacker suite | pytest | Test | Plays the 3 attackers |
+
+| Store | Owner | Holds |
+|---|---|---|
+| `vector.db` | Us | Encrypted chunks, wrapped DEKs, rotation cursors |
+| `vault.db` | Us | Encrypted token -> PII entries |
+| `auth.db` | Us | Users (password hashes), sessions (token hashes) |
+| `kms_<customer>.db` + root key file | Customer | CMKs, policy, audit log |
+
+Our process never reads customer KMS files.
+
+## 14. Customer simulation
+
+One Customer KMS process hosts one **account per customer**. Each account has its own DB
+file and its own root key file (mode 0600).
+
+Identities per customer:
+
+| Identity | Can do |
+|---|---|
+| Customer admin key (Ed25519) | CreateKey, PutKeyPolicy, RotateKey, DisableKey, ScheduleDeletion, ReadAudit |
+| Our service key (Ed25519) | Only what that customer's policy allows: GenerateDataKey, Decrypt, ReEncrypt |
+| Tenant users (password login) | Sentinel API with scopes `ingest`, `query`, `reidentify`, `admin` |
+
+Seed: 10 customers (hospital, insurer, pharmacy, bank, law firm, ...), ~50 synthetic
+documents each with PHI/PII from `Faker`, 2–5 users per customer.
+
+Customer personas:
+
+| Persona | Behavior |
+|---|---|
+| Normal | Ingest + query |
+| Strict | DEK cache TTL = 0 |
+| Rotator | Rotates its CMK mid-run |
+| Leaver | Disables its CMK = crypto-shred |
+
+The simulator runs all 10 at once, with several users per customer logged in at the same
+time. Tests assert one customer's rotate or revoke never affects another.
+
+## 15. Customer KMS operations
+
+Every call passes the same gate:
+
+```
+verify signature -> timestamp skew <= 60 s + unused nonce -> policy (principal, action, EncryptionContext:tenant_id)
+  -> key enabled -> do work -> append audit entry
+```
+
+| Op | Does | Returns to caller |
+|---|---|---|
+| `CreateKey` | 32 random bytes = CMK v1, stored wrapped by the account root key | `cmk_id` |
+| `GenerateDataKey(cmk, ctx)` | New random 32-byte DEK, AES-GCM sealed under active CMK version, AAD = canonical `ctx` | plaintext DEK + wrapped blob |
+| `Decrypt(blob, ctx)` | Reads version from blob, opens it. Wrong `ctx` fails | plaintext DEK |
+| `ReEncrypt(blob, ctx)` | Opens with old version, seals with active version, inside KMS | new wrapped blob (no plaintext) |
+| `RotateKey` | Adds version N+1 as active. Old versions stay decrypt-only | new version |
+| `DisableKey` | All further calls fail | — |
+| `ScheduleDeletion(7d)` | Destroys key material after window | — |
+
+Wrapped blob = `{cmk_id, cmk_version, nonce, ciphertext}`. `ctx` =
+`{tenant_id, workspace_id, purpose, dek_id}`.
+
+`ReEncrypt` lets us rotate without the plaintext DEK ever visiting our process.
+
+## 16. Our DEK lifecycle and rotation
+
+Table `deks` in `vector.db`:
+
+```
+dek_id | tenant | workspace | purpose | wrapped_blob | cmk_version | uses | created | state
+                                                                         active | retired | compromised
+```
+
+Write:
+
+```
+active DEK for (tenant, workspace)?
+  ├─ none, or > 1M uses / 24 h -> GenerateDataKey -> insert row -> cache plaintext
+  └─ found -> cache hit ? use : Decrypt -> cache
+AES-GCM encrypt chunk, AAD = {tenant, workspace, doc, chunk, dek_id}
+insert chunk with dek_id
+```
+
+A per-(tenant, workspace) asyncio lock stops two concurrent ingests creating two DEKs.
+
+Read:
+
+```
+load this tenant's chunks -> distinct dek_ids (usually 1–2)
+  -> one Decrypt per dek_id (0 on cache hit)
+  -> decrypt embeddings -> rank -> decrypt top-k text -> PII egress check -> LLM
+```
+
+Cache: key `(tenant, dek_id)`, evict at 5 min or 10k uses, whichever first. Evict =
+zero the `bytearray`. Customer flush endpoint clears it at once.
+
+Rotation cases:
+
+| Case | Trigger | Steps | Chunks rewritten? |
+|---|---|---|---|
+| DEK roll | 1M uses or 24 h | New DEK; old DEK `retired`; old chunks keep old `dek_id` | No |
+| Customer rotates CMK | `RotateKey` | Worker finds DEKs with old `cmk_version` -> `ReEncrypt` -> `UPDATE ... WHERE wrapped_blob = old` | No |
+| DEK compromised | Admin marks `compromised` | Freeze workspace writes -> new DEK -> decrypt + re-encrypt each chunk -> delete old wrapped DEK | Yes |
+| Customer leaves | `DisableKey` | Next cache miss fails; flush makes it immediate; data is crypto-shredded | No |
+
+Crash safety: every row change is one compare-and-swap. A cursor is saved per batch.
+On restart the worker resumes from the cursor and skips rows already done. Reads work
+throughout because each row names its own `dek_id` and `cmk_version`.
+
+Test: kill the worker mid-batch, restart, every chunk still decrypts, job completes.
+
+## 17. Users, login and concurrent sessions
+
+Requirement: many users, across tenants, log in at the same time and each can hold
+several live sessions (e.g. laptop + agent runner).
+
+Design: **server-side opaque sessions**, not JWTs, because we need instant revocation
+(logout, tenant freeze, compromise).
+
+| Item | Choice |
+|---|---|
+| Password storage | Argon2id (`argon2-cffi`) |
+| Login | `POST /auth/login` -> session token (32 random bytes, base64url) |
+| Token at rest | Only SHA-256(token) stored in `auth.db`. Stolen DB can't replay sessions |
+| Session row | `{session_hash, user_id, tenant_id, scopes, created, last_seen, expires, revoked}` |
+| Lifetime | Idle timeout 30 min, absolute 12 h |
+| Concurrency | Up to 10 live sessions per user. 11th login evicts the oldest |
+| Logout | `POST /auth/logout` (this session), `POST /auth/logout-all` (all of the user's) |
+| List | `GET /auth/sessions` — user sees their own sessions |
+| Revocation hooks | Tenant freeze, user disable, or containment -> revoke all tenant sessions |
+| Brute force | Per-user + per-IP failed-login backoff; generic "invalid credentials" error |
+| Transport | `Authorization: Bearer <token>`; never logged (redaction processor) |
+
+Tenant identity comes **only** from the session row. Any `tenant_id` in a path, body or
+header is ignored or must match, else 404 (not 403, so ids aren't confirmed to exist).
+
+Tests:
+- 10 tenants × 3 users × 2 sessions each, all running ingest/query concurrently.
+- Session of tenant A can never read tenant B data.
+- Logout of one session leaves the user's other sessions working.
+- Tenant freeze kills all that tenant's sessions; other tenants unaffected.
+- Expired / revoked / tampered tokens rejected with the same generic 401.
