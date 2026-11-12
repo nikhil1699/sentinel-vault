@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
@@ -56,8 +57,9 @@ async def test_transactions_take_write_lock_up_front(tmp_path: Path) -> None:
     await engine.dispose()
 
 
-async def test_require_scope(settings: Settings, clock: FakeClock) -> None:
-    app = create_app(settings, configure_logs=False, clock=clock)
+async def test_require_scope(settings: Settings, clock: FakeClock,
+                             app_deps: dict[str, Any]) -> None:
+    app = create_app(settings, configure_logs=False, clock=clock, **app_deps)
 
     @app.get("/_t/admin-only")
     async def admin_only(p: Principal = Depends(require_scope(Scope.ADMIN))) -> dict[str, str]:  # noqa: B008

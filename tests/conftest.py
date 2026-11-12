@@ -4,12 +4,15 @@ import io
 import json
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from sentinel_vault.config import Settings
 from sentinel_vault.security.logging import configure_logging
+
+if TYPE_CHECKING:
+    from sentinel_vault.privacy.detector import PiiDetector
 
 
 class LogCapture:
@@ -55,6 +58,25 @@ class FakeClock:
 @pytest.fixture
 def clock() -> FakeClock:
     return FakeClock()
+
+
+@pytest.fixture(scope="session")
+def detector() -> PiiDetector:
+    """Real Presidio + spaCy en_core_web_lg, loaded once per test session (~3 s)."""
+    from sentinel_vault.privacy.detector import PiiDetector, build_presidio_analyzer
+
+    return PiiDetector(build_presidio_analyzer(), 0.35)
+
+
+@pytest.fixture
+def app_deps(detector: PiiDetector) -> dict[str, object]:
+    """Injectables for create_app() in tests that don't need the KMS."""
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from sentinel_vault.retrieval.embedder import HashEmbedder
+
+    return {"service_key": Ed25519PrivateKey.generate(), "detector": detector,
+            "embedder": HashEmbedder()}
 
 
 # Synthetic PHI used across leakage tests. None of these refer to real people.

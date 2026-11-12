@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 import pytest
@@ -21,8 +22,9 @@ PASSWORD = "correct horse battery staple"
 
 
 @pytest.fixture
-async def app(settings: Settings, clock: FakeClock, logs: LogCapture) -> AsyncIterator[FastAPI]:
-    app = create_app(settings, configure_logs=False, clock=clock)
+async def app(settings: Settings, clock: FakeClock, logs: LogCapture,
+              app_deps: dict[str, Any]) -> AsyncIterator[FastAPI]:
+    app = create_app(settings, configure_logs=False, clock=clock, **app_deps)
     async with app.router.lifespan_context(app):
         svc: AuthService = app.state.auth_service
         for t in ("acme", "beta"):
