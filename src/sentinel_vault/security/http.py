@@ -7,6 +7,9 @@ service still runs as its own process with its own data and keys.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager
+
 from fastapi import APIRouter, FastAPI
 from pydantic import BaseModel
 
@@ -20,11 +23,14 @@ class Health(BaseModel):
     service: str
 
 
+Lifespan = Callable[[FastAPI], AbstractAsyncContextManager[None]]
+
+
 def build_app(service: str, title: str, log_level: str = "INFO",
-              configure_logs: bool = True) -> FastAPI:
+              configure_logs: bool = True, lifespan: Lifespan | None = None) -> FastAPI:
     if configure_logs:
         configure_logging(log_level)
-    app = FastAPI(title=title, redoc_url=None)
+    app = FastAPI(title=title, redoc_url=None, lifespan=lifespan)
     install_error_handlers(app)
     app.add_middleware(RequestContextMiddleware)
 

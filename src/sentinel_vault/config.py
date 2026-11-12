@@ -56,6 +56,22 @@ class Settings(BaseSettings):
     session_absolute_seconds: int = Field(default=43_200, ge=300, le=7 * 86_400)
     max_sessions_per_user: int = Field(default=10, ge=1, le=100)
 
+    # Passwords: Argon2id. Defaults follow RFC 9106 second recommended option.
+    # Tests lower cost; floors stop a config typo from disabling hashing cost entirely.
+    argon2_time_cost: int = Field(default=3, ge=1, le=10)
+    argon2_memory_kib: int = Field(default=65_536, ge=8, le=1_048_576)
+    argon2_parallelism: int = Field(default=4, ge=1, le=8)
+    password_min_length: int = Field(default=12, ge=8, le=128)
+
+    # Login throttling, per attempted user and per client IP.
+    login_max_failures: int = Field(default=5, ge=1, le=100)
+    login_lockout_base_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
+    login_lockout_max_seconds: float = Field(default=900.0, ge=1.0, le=86_400.0)
+
+    @property
+    def auth_db_path(self) -> Path:
+        return self.data_dir / "auth.db"
+
     @field_validator("api_host")
     @classmethod
     def _loopback_only(cls, v: str) -> str:

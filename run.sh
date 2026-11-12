@@ -83,6 +83,8 @@ cmd_setup() {
 
   mkdir -p "$LOG_DIR" "$PID_DIR"
   "$PY" -m sentinel_vault.bootstrap || fail "bootstrap failed"
+  "$PY" -m customer_kms.cli register-principal sentinel-svc "$ROOT/.secrets/service_ed25519.pub.pem" \
+    || fail "KMS principal registration failed"
 }
 
 is_running() { [[ -f "$PID_DIR/$1.pid" ]] && kill -0 "$(cat "$PID_DIR/$1.pid")" 2>/dev/null; }

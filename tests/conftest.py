@@ -36,7 +36,25 @@ def logs() -> Iterator[LogCapture]:
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return Settings(data_dir=tmp_path / "data", secrets_dir=tmp_path / "secrets")
+    # Low Argon2 cost keeps tests fast; production defaults are tested in test_config.
+    return Settings(data_dir=tmp_path / "data", secrets_dir=tmp_path / "secrets",
+                    argon2_time_cost=1, argon2_memory_kib=8, argon2_parallelism=1)
+
+
+class FakeClock:
+    def __init__(self, start: float = 1_800_000_000.0) -> None:
+        self.now = start
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+@pytest.fixture
+def clock() -> FakeClock:
+    return FakeClock()
 
 
 # Synthetic PHI used across leakage tests. None of these refer to real people.

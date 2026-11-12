@@ -60,6 +60,20 @@ class TenantFrozenError(AppError):
     public_message = "Tenant is temporarily locked."
 
 
+class RateLimitedError(AppError):
+    status_code = 429
+    code = "rate_limited"
+    public_message = "Too many requests. Try again later."
+
+
+class InvalidInputError(AppError):
+    """Input passed schema validation but broke a business rule (e.g. weak password)."""
+
+    status_code = 400
+    code = "invalid_input"
+    public_message = "Invalid input."
+
+
 class PolicyViolationError(AppError):
     status_code = 422
     code = "policy_violation"

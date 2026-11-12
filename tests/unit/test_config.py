@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from customer_kms.app import KmsSettings
+from customer_kms.config import KmsSettings
 from sentinel_vault.config import Settings
 
 
