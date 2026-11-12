@@ -198,19 +198,40 @@ mock_llm/        records every request it gets (tests assert no PII arrived)
 Embeddings: `fastembed` (ONNX, small, no torch). Tests use a deterministic hash embedder
 so they are fast and offline.
 
-## 11. Milestones
+## 11. Development plan — 9 milestones (M0–M8)
 
-1. Domain models, settings, log redaction, safe errors, auth + sessions (§17).
-2. Customer KMS service: CreateKey, PutKeyPolicy, GenerateDataKey, Decrypt, Rotate, Disable, audit. Signed requests.
-3. Envelope crypto + DEK cache + KMS client. Tamper/AAD/policy tests (A2, A4).
-4. Ingest path + vector store + tokenization vault. Tenant isolation tests (A1).
-5. Query path + in-memory index + egress guard + mock LLM. Poisoned-doc tests (A3).
-6. Rotation job (resumable) + containment + revoke/crypto-shred tests.
-7. Seed 10 tenants + concurrent load test; README (threat model, migration, AI usage).
-8. `run.sh` + Makefile + attack report (§18). Verify from a fresh clone in a clean folder.
+Every milestone ends with a **gate**. The next milestone does not start until it passes:
 
-R0 is built in from milestone 1: each milestone adds its tests to `./run.sh test`
-and must pass from a clean checkout before the next starts.
+1. New unit tests for every new module (crypto, KMS, auth, privacy, stores, services).
+2. Coverage of new code >= 85% (`pytest --cov`, branch coverage).
+3. `./run.sh verify` green: `ruff` + `mypy --strict` + all tests so far (no regressions).
+4. Fresh-clone check: `./run.sh reset && ./run.sh && ./run.sh test` passes.
+5. One commit (or a few) per milestone on the feature branch.
+
+| M | Name | Builds | Unit tests (what they prove) |
+|---|---|---|---|
+| M0 | Bootstrap | `run.sh` (setup/test/verify/stop/reset), Makefile, settings (pydantic-settings), `.secrets/` key generation, health endpoints | Settings load + reject bad values; key files created 0600; `run.sh` twice = no change |
+| M1 | Foundation | Domain models + typed ids, `Sensitive[T]` wrapper, log redaction processor, safe error handler, correlation ids | Redactor strips PHI from logs; `repr(Sensitive)` = `***`; forced exception with PHI gives generic body + no PHI in logs |
+| M2 | Auth + sessions | `auth.db`, Argon2id users, login/logout/logout-all/list, idle + absolute expiry, 10-session cap, backoff, tenant principal dependency | Hash-only token storage; expiry; cap evicts oldest; logout one keeps others; tampered/expired/revoked = same 401; concurrent logins (asyncio.gather) |
+| M3 | Customer KMS | Separate FastAPI app; per-customer DB + root key; CreateKey, PutKeyPolicy, GenerateDataKey, Decrypt, ReEncrypt, RotateKey, DisableKey, ScheduleDeletion, audit log; Ed25519 request signing | Policy engine allow/deny incl. `tenant_id` condition; bad sig / replayed nonce / clock skew rejected; wrong context fails Decrypt; old version decrypts after rotate; disabled key refuses all; every call audited (A4) |
+| M4 | Envelope crypto | AES-256-GCM envelope, canonical AAD, DEK cache (TTL/uses/zeroing), `KmsProvider` protocol + signed client, `deks` table, per-workspace lock | Round trip; bit-flip in ct/nonce/tag fails; AAD swap (tenant/doc/chunk/dek_id) fails; cache hit = 0 KMS calls; TTL + use-count eviction zeroes buffer; concurrent first-writes make one DEK (A2) |
+| M5 | Ingest + vault | Chunker, PII detector (Presidio + custom recognizers), tokenizer (HMAC), vault store, hash + fastembed embedders, vector store (per-tenant partition), `POST /ingest`, `GET /documents/{id}` | Detects names/SSN/MRN/DOB/phone/email in text + structured fields; unknown fields dropped; same value = same token per tenant, different across tenants; stored chunk has no raw PII; tenant B can't read A's doc by id or row copy (A1) |
+| M6 | Query + egress | Per-tenant in-memory index, `POST /query`, egress guard, mock LLM, re-identify with scope | Retrieval never returns other tenant's chunks; obfuscated PII (spaced, homoglyph, base64, nested JSON) caught or request fails closed; prompt-injection doc can't widen scope; mock LLM log has zero PII; re-identify needs scope (A3) |
+| M7 | Rotation + containment | Rotation worker (DEK roll, CMK re-wrap via ReEncrypt, cursor), containment (freeze, re-encrypt, revoke sessions), cache flush, revoke/crypto-shred | Old + new records readable mid-rotation; kill worker mid-batch, restart, resumes and finishes; CAS prevents double re-wrap; compromised DEK gone after re-encrypt; disabled CMK = data unreadable; other tenants unaffected |
+| M8 | Simulation + reviewer kit | Seed 10 customers (personas, Faker docs, users), concurrent simulator, `./run.sh attack` report, `./run.sh demo`, `scripts/client.py`, README (scope, decisions, threat model, migration, AI usage, claim→test map), Dockerfile + compose | Seed idempotent; 10 tenants × 3 users × 2 sessions concurrent ingest/query with no cross-tenant reads; attack runner exits non-zero on any failed defense |
+
+Test layout:
+
+```
+tests/
+  unit/<module>/test_*.py      fast, no I/O beyond temp SQLite, no network
+  integration/test_*.py        ASGI in-process clients, KMS + API + mock LLM wired together
+  attacks/test_a1..a4_*.py     one file per threat actor
+  conftest.py                  temp dirs, random ports, hash embedder, seeded tenants
+```
+
+Integration tests start at M3 (KMS app) and grow each milestone. Attack tests land in the
+milestone that builds the defense (A4 in M3, A2 in M4, A1 in M5, A3 in M6).
 
 ## 12. Least-sure calls
 
