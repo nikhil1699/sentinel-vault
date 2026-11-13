@@ -124,14 +124,16 @@ cmd_up() {
     ok "$name on http://127.0.0.1:$port  (docs: /docs)"
   done
   cmd_smoke
+  "$PY" -m reviewer_kit.seed || fail "seeding failed — see $LOG_DIR/sentinel-api.log"
   cat <<EOF
 
 Sentinel Vault is up.
   API          http://127.0.0.1:$API_PORT/docs
   Customer KMS http://127.0.0.1:$KMS_PORT/docs
   Mock LLM     http://127.0.0.1:$LLM_PORT/docs
+  Logins       $ROOT/.secrets/reviewer-credentials.txt
   Logs         $LOG_DIR/
-Next: ./run.sh test   |   ./run.sh stop
+Next: ./run.sh demo | attack | simulate | test | stop
 EOF
 }
 
@@ -166,11 +168,11 @@ cmd_test()   { cmd_setup >/dev/null; "$PY" -m pytest -q "$@"; }
 
 cmd_verify() {
   cmd_setup >/dev/null
-  "$PY" -m ruff check src customer_kms mock_llm tests || fail "ruff found issues"
+  "$PY" -m ruff check src customer_kms mock_llm reviewer_kit tests || fail "ruff found issues"
   ok "ruff"
-  "$PY" -m mypy src customer_kms mock_llm || fail "mypy found type errors"
+  "$PY" -m mypy src customer_kms mock_llm reviewer_kit || fail "mypy found type errors"
   ok "mypy --strict"
-  "$PY" -m pytest -q -rf --cov=sentinel_vault --cov=customer_kms --cov=mock_llm \
+  "$PY" -m pytest -q -rf --cov=sentinel_vault --cov=customer_kms --cov=mock_llm --cov=reviewer_kit \
     --cov-branch --cov-report=term-missing:skip-covered --cov-fail-under=85 \
     || fail "tests failed or coverage below 85%"
   ok "tests + coverage >= 85%"
@@ -190,6 +192,8 @@ case "${1:-up}" in
   stop)   cmd_stop ;;
   status) cmd_status ;;
   reset)  cmd_reset ;;
-  attack|demo) fail "'$1' arrives in milestone M8" ;;
-  *) fail "unknown command '$1' (use: up | test | verify | stop | status | reset)" ;;
+  demo)     cmd_up >/dev/null; "$PY" -m reviewer_kit.demo ;;
+  attack)   cmd_up >/dev/null; "$PY" -m reviewer_kit.attack ;;
+  simulate) cmd_up >/dev/null; "$PY" -m reviewer_kit.simulate ;;
+  *) fail "unknown command '$1' (use: up | demo | attack | simulate | test | verify | stop | status | reset)" ;;
 esac

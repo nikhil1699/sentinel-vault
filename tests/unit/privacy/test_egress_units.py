@@ -23,6 +23,7 @@ TOKEN = "<<US_SSN_0123456789abcdef>>"
     ("mail a.b@example.org", "EMAIL"),
     ("call (415) 555-0134", "PHONE"),
     ("MRN: 00A-7781-22", "MRN"),
+    ("mrn 77812", "MRN"),
     ("card 4111 1111 1111 1111", "DIGIT_RUN"),
     ("1 2 3 - 4 5 - 6 7 8 9", "DIGIT_RUN"),
     ("\uff11\uff12\uff13-\uff14\uff15-\uff16\uff17\uff18\uff19", "US_SSN"),  # full-width
@@ -34,6 +35,8 @@ def test_hard_findings(text: str, hit: str) -> None:
 @pytest.mark.parametrize("text", [
     f"patient {TOKEN} has kidney stones", "dose 500 mg twice daily", "N20.0 follow-up",
     "seen 2026-11-13", SYSTEM_PROMPT, "",
+    f"mrn: {TOKEN}\nphone: {TOKEN}",       # regression: label + next label isn't an MRN
+    "MRN: pending",
 ])
 def test_hard_findings_clean(text: str) -> None:
     assert hard_findings(text) == []

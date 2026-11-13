@@ -43,6 +43,12 @@ class Received(BaseModel):
     requests: list[CompletionRequest]
 
 
+class ModeBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["summarize", "obedient", "error"]
+
+
 def create_app(configure_logs: bool = True) -> FastAPI:
     app = build_app("mock-llm", "Mock LLM (external system)", configure_logs=configure_logs)
     app.state.received = []
@@ -64,5 +70,11 @@ def create_app(configure_logs: bool = True) -> FastAPI:
     @app.get("/v1/received", response_model=Received)
     async def received(request: Request) -> Received:
         return Received(requests=list(request.app.state.received))
+
+    @app.put("/v1/mode", response_model=ModeBody)
+    async def set_mode(body: ModeBody, request: Request) -> ModeBody:
+        """Test hook (this is a mock): lets the attack runner simulate a fully obedient LLM."""
+        request.app.state.mode = body.mode
+        return body
 
     return app

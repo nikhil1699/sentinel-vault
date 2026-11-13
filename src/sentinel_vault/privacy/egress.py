@@ -38,6 +38,7 @@ log = get_logger(__name__)
 _SEAL: Final = object()
 _PUA: Final = re.compile("[\ue000-\uf8ff]")
 _PH_OPEN, _PH_CLOSE = "\ue000", "\ue001"
+_PH_RE: Final = re.compile("\ue000[a-z]+\ue001")
 _B64: Final = re.compile(r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{20,}={0,2}(?![A-Za-z0-9+/_=-])")
 _HEX: Final = re.compile(r"(?<![0-9A-Fa-f])(?:[0-9A-Fa-f]{2}){12,}(?![0-9A-Fa-f])")
 _REMOVED: Final = "[encoded data removed]"
@@ -46,7 +47,7 @@ HARD_PATTERNS: Final[tuple[tuple[str, re.Pattern[str]], ...]] = (
     ("US_SSN", re.compile(r"\b\d{3}[-\s.]?\d{2}[-\s.]?\d{4}\b")),
     ("EMAIL", re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")),
     ("PHONE", re.compile(r"\(?\b\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b")),
-    ("MRN", re.compile(r"(?i)\bMRN[:#\s-]*[A-Z0-9][A-Z0-9-]{3,}")),
+    ("MRN", re.compile(r"(?i)\bMRN[:#\t -]*(?=[A-Z0-9-]*\d)[A-Z0-9][A-Z0-9-]{3,}")),
 )
 _DIGIT_SEP: Final = re.compile(r"(?<=\d)[\s.\-()/]+(?=\d)")
 _LONG_DIGITS: Final = re.compile(r"\d{9,}")
@@ -165,7 +166,7 @@ class EgressGuard:
                 out += [masked[last:s.start], t]
                 last = s.end
             masked = "".join([*out, masked[last:]])
-        hits = hard_findings(_PUA.sub(" ", masked))
+        hits = hard_findings(_PH_RE.sub(" ", masked))
         if hits:
             log.warning("egress_blocked", tenant_id=tenant, error_code=",".join(hits))
             raise EgressBlockedError
@@ -208,8 +209,9 @@ class LlmClient:
         body = self._body(prompt)
         # Last check on the exact bytes leaving the process.
         for msg in json.loads(body)["messages"]:
-            if hard_findings(msg["content"]):
-                log.error("egress_final_check_failed")
+            hits = hard_findings(msg["content"])
+            if hits:
+                log.error("egress_final_check_failed", error_code=",".join(hits))
                 raise EgressBlockedError
         try:
             r = await self._http.post("/v1/complete", content=body,
