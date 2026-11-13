@@ -197,3 +197,12 @@ class Keyring:
     def flush_tenant(self, tenant_id: TenantId) -> int:
         """Drop every cached key for a tenant now (customer revocation, containment)."""
         return self.cache.evict_tenant(tenant_id)
+
+    @property
+    def store(self) -> KeyringStore:
+        return self._store
+
+    async def rewrap(self, d: DekRow) -> tuple[bytes, int]:
+        """ReEncrypt a wrapped DEK under the CMK's current version. No plaintext here."""
+        ref = await self._ref(d.tenant_id)
+        return await self._kms.re_encrypt(ref, d.wrapped, kms_context(d))

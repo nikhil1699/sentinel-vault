@@ -7,8 +7,10 @@ Every lookup is scoped by ``tenant_id``.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from enum import StrEnum
+from typing import Any
 
 from sqlalchemy import (
     Column,
@@ -21,6 +23,7 @@ from sqlalchemy import (
     Table,
     Text,
     and_,
+    delete,
     select,
     update,
 )
@@ -58,6 +61,41 @@ policies = Table(
     Column("policy_json", Text, nullable=False),
     Column("updated_at", Float, nullable=False),
 )
+
+jobs = Table(
+    "jobs", metadata,
+    Column("job_id", String(40), primary_key=True),
+    Column("tenant_id", String(32), nullable=False, index=True),
+    Column("kind", String(16), nullable=False),
+    Column("state", String(16), nullable=False),
+    Column("step", String(32), nullable=False),
+    Column("cursor", String(40), nullable=False),
+    Column("data_json", Text, nullable=False),
+    Column("processed", Integer, nullable=False),
+    Column("created_at", Float, nullable=False),
+    Column("updated_at", Float, nullable=False),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class JobRow:
+    job_id: str
+    tenant_id: TenantId
+    kind: str
+    state: str
+    step: str
+    cursor: str
+    data: dict[str, Any]
+    processed: int
+    created_at: float
+    updated_at: float
+
+
+def _job(r: object) -> JobRow:
+    m = r._mapping  # type: ignore[attr-defined]
+    return JobRow(m["job_id"], TenantId(m["tenant_id"]), m["kind"], m["state"], m["step"],
+                  m["cursor"], json.loads(m["data_json"]), int(m["processed"]),
+                  float(m["created_at"]), float(m["updated_at"]))
 
 
 class DekState(StrEnum):
@@ -197,3 +235,81 @@ class KeyringStore:
             r = (await conn.execute(select(policies.c.policy_json).where(
                 policies.c.tenant_id == tenant_id))).first()
         return None if r is None else str(r[0])
+
+    # --- rotation / containment (M7) ----------------------------------------------------
+
+    async def deks_after(self, tenant_id: TenantId, cursor: str, limit: int) -> list[DekRow]:
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(select(deks).where(and_(
+                deks.c.tenant_id == tenant_id, deks.c.dek_id > cursor))
+                .order_by(deks.c.dek_id).limit(limit))).all()
+        return [_dek(r) for r in rows]
+
+    async def cas_rewrap(self, tenant_id: TenantId, dek_id: DekId, old: bytes, new: bytes,
+                         version: int) -> bool:
+        """Swap the wrapped DEK only if nobody changed it since we read it."""
+        async with self._engine.begin() as conn:
+            res = await conn.execute(update(deks).where(and_(
+                deks.c.dek_id == dek_id, deks.c.tenant_id == tenant_id,
+                deks.c.wrapped == old)).values(wrapped=new, cmk_version=version))
+        return int(res.rowcount) == 1
+
+    async def delete_deks(self, tenant_id: TenantId, dek_ids: list[str]) -> int:
+        async with self._engine.begin() as conn:
+            res = await conn.execute(delete(deks).where(and_(
+                deks.c.tenant_id == tenant_id, deks.c.dek_id.in_(dek_ids))))
+        return int(res.rowcount)
+
+    async def create_job(self, job_id: str, tenant_id: TenantId, kind: str, step: str,
+                         data: dict[str, Any], now: float) -> None:
+        async with self._engine.begin() as conn:
+            await conn.execute(jobs.insert().values(
+                job_id=job_id, tenant_id=tenant_id, kind=kind, state="running", step=step,
+                cursor="", data_json=json.dumps(data), processed=0, created_at=now,
+                updated_at=now))
+
+    async def start_containment(self, job_id: str, tenant_id: TenantId,
+                                now: float) -> list[str]:
+        """Mark every live DEK compromised and record the set, in ONE transaction.
+
+        Resume uses the recorded set, so keys created during containment are never
+        mistaken for compromised ones.
+        """
+        async with self._engine.begin() as conn:
+            ids = list((await conn.execute(select(deks.c.dek_id).where(and_(
+                deks.c.tenant_id == tenant_id,
+                deks.c.state != DekState.COMPROMISED)))).scalars().all())
+            await conn.execute(update(deks).where(and_(
+                deks.c.tenant_id == tenant_id, deks.c.dek_id.in_(ids)))
+                .values(state=DekState.COMPROMISED))
+            await conn.execute(jobs.insert().values(
+                job_id=job_id, tenant_id=tenant_id, kind="contain", state="running",
+                step="migrate", cursor="", data_json=json.dumps({"compromised": ids}),
+                processed=0, created_at=now, updated_at=now))
+        return ids
+
+    async def update_job(self, job_id: str, now: float, *, state: str | None = None,
+                         step: str | None = None, cursor: str | None = None,
+                         add_processed: int = 0) -> None:
+        values: dict[str, Any] = {"updated_at": now,
+                                  "processed": jobs.c.processed + add_processed}
+        if state is not None:
+            values["state"] = state
+        if step is not None:
+            values["step"] = step
+        if cursor is not None:
+            values["cursor"] = cursor
+        async with self._engine.begin() as conn:
+            await conn.execute(update(jobs).where(jobs.c.job_id == job_id).values(**values))
+
+    async def get_job(self, tenant_id: TenantId, job_id: str) -> JobRow | None:
+        async with self._engine.begin() as conn:
+            r = (await conn.execute(select(jobs).where(and_(
+                jobs.c.job_id == job_id, jobs.c.tenant_id == tenant_id)))).first()
+        return None if r is None else _job(r)
+
+    async def running_jobs(self) -> list[JobRow]:
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(select(jobs).where(jobs.c.state == "running")
+                                       .order_by(jobs.c.created_at))).all()
+        return [_job(r) for r in rows]

@@ -132,3 +132,32 @@ class VectorStore:
         async with self._engine.begin() as conn:
             return len((await conn.execute(select(documents.c.doc_id).where(
                 documents.c.tenant_id == tenant_id))).all())
+
+    # --- containment (M7) ------------------------------------------------------------------
+
+    async def documents_on_deks(self, tenant_id: TenantId, dek_ids: list[str],
+                                limit: int) -> list[DocumentId]:
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(select(documents.c.doc_id).where(and_(
+                documents.c.tenant_id == tenant_id, documents.c.dek_id.in_(dek_ids)))
+                .order_by(documents.c.doc_id).limit(limit))).scalars().all()
+        return [DocumentId(r) for r in rows]
+
+    async def chunks_for_doc(self, tenant_id: TenantId, doc_id: DocumentId) -> list[ChunkRow]:
+        return [c for c in await self.list_chunks(tenant_id) if c.doc_id == doc_id]
+
+    async def replace_document(self, doc: DocumentRow, rows: list[ChunkRow]) -> None:
+        """Swap a document's ciphertexts and chunks atomically (re-encryption)."""
+        async with self._engine.begin() as conn:
+            await conn.execute(documents.update().where(and_(
+                documents.c.doc_id == doc.doc_id, documents.c.tenant_id == doc.tenant_id))
+                .values(dek_id=doc.dek_id, original_nonce=doc.original_nonce,
+                        original_ct=doc.original_ct, tokenized_nonce=doc.tokenized_nonce,
+                        tokenized_ct=doc.tokenized_ct))
+            await conn.execute(chunks.delete().where(and_(
+                chunks.c.doc_id == doc.doc_id, chunks.c.tenant_id == doc.tenant_id)))
+            if rows:
+                await conn.execute(chunks.insert(), [
+                    {"chunk_id": c.chunk_id, "doc_id": c.doc_id, "tenant_id": c.tenant_id,
+                     "workspace_id": c.workspace_id, "seq": c.seq, "dek_id": c.dek_id,
+                     "nonce": c.nonce, "ciphertext": c.ciphertext} for c in rows])

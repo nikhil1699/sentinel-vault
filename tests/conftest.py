@@ -7,9 +7,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pytest
+from hypothesis import settings as hypothesis_settings
 
 from sentinel_vault.config import Settings
 from sentinel_vault.security.logging import configure_logging
+
+# Hypothesis' default 200 ms per-example deadline flakes under load (coverage, busy host).
+hypothesis_settings.register_profile("sv", deadline=None)
+hypothesis_settings.load_profile("sv")
 
 if TYPE_CHECKING:
     from sentinel_vault.privacy.detector import PiiDetector

@@ -84,3 +84,19 @@ class VaultStore:
         return [VaultRow(TenantId(m["tenant_id"]), m["token"], m["entity"], DekId(m["dek_id"]),
                          bytes(m["nonce"]), bytes(m["ciphertext"]))
                 for m in (r._mapping for r in rows)]
+
+    async def rows_on_deks(self, tenant_id: TenantId, dek_ids: list[str]) -> list[VaultRow]:
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(select(vault_entries).where(and_(
+                vault_entries.c.tenant_id == tenant_id,
+                vault_entries.c.dek_id.in_(dek_ids))))).all()
+        return [VaultRow(TenantId(m["tenant_id"]), m["token"], m["entity"], DekId(m["dek_id"]),
+                         bytes(m["nonce"]), bytes(m["ciphertext"]))
+                for m in (r._mapping for r in rows)]
+
+    async def delete_on_deks(self, tenant_id: TenantId, dek_ids: list[str]) -> int:
+        async with self._engine.begin() as conn:
+            res = await conn.execute(vault_entries.delete().where(and_(
+                vault_entries.c.tenant_id == tenant_id,
+                vault_entries.c.dek_id.in_(dek_ids))))
+        return int(res.rowcount)

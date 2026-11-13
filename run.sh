@@ -170,7 +170,7 @@ cmd_verify() {
   ok "ruff"
   "$PY" -m mypy src customer_kms mock_llm || fail "mypy found type errors"
   ok "mypy --strict"
-  "$PY" -m pytest -q --cov=sentinel_vault --cov=customer_kms --cov=mock_llm \
+  "$PY" -m pytest -q -rf --cov=sentinel_vault --cov=customer_kms --cov=mock_llm \
     --cov-branch --cov-report=term-missing:skip-covered --cov-fail-under=85 \
     || fail "tests failed or coverage below 85%"
   ok "tests + coverage >= 85%"

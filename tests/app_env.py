@@ -11,6 +11,7 @@ from typing import Any
 import httpx
 from fastapi import FastAPI
 
+from mock_llm.app import create_app as create_llm
 from sentinel_vault.api.app import create_app
 from sentinel_vault.config import Settings
 from sentinel_vault.domain.auth import Scope
@@ -38,6 +39,7 @@ class AppEnv:
     app: FastAPI
     api: httpx.AsyncClient
     kms: KmsEnv
+    llm: FastAPI
     tokens: dict[tuple[str, str], str] = field(default_factory=dict)
 
     def h(self, tenant: str, user: str = "admin") -> dict[str, str]:
@@ -48,16 +50,34 @@ class AppEnv:
         assert r.status_code == 201, r.text
         return r.json()
 
+    async def query(self, tenant: str, question: str, user: str = "admin",
+                    **kw: Any) -> httpx.Response:
+        return await self.api.post("/query", json={"question": question, **kw},
+                                   headers=self.h(tenant, user))
+
+    def llm_received(self) -> str:
+        """Everything the external LLM ever received, as one string."""
+        return "\n".join(m.content for r in self.llm.state.received for m in r.messages)
+
+    async def relogin(self, tenant: str, user: str = "admin") -> None:
+        r = await self.api.post("/auth/login", json={"tenant_id": tenant, "username": user,
+                                                     "password": PASSWORD})
+        assert r.status_code == 200, r.text
+        self.tokens[(tenant, user)] = r.json()["token"]
+
 
 @asynccontextmanager
 async def app_env(tmp_path: Path, settings: Settings, clock: FakeClock, detector: PiiDetector,
                   tenants: tuple[str, ...] = ("acme", "beta"),
                   onboard: bool = True) -> AsyncIterator[AppEnv]:
     async with kms_env(tmp_path, clock, tenants) as kms:
+        llm = create_llm(configure_logs=False)
+        llm_http = httpx.AsyncClient(transport=httpx.ASGITransport(app=llm),
+                                     base_url="http://llm")
         app = create_app(settings, configure_logs=False, clock=clock, kms_http=kms.http,
                          service_key=kms.service_key, detector=detector,
-                         embedder=HashEmbedder())
-        async with app.router.lifespan_context(app):
+                         embedder=HashEmbedder(), llm_http=llm_http)
+        async with llm_http, app.router.lifespan_context(app):
             auth: AuthService = app.state.auth_service
             users = {"admin": list(Scope), "analyst": [Scope.QUERY],
                      "loader": [Scope.INGEST, Scope.QUERY]}
@@ -67,7 +87,7 @@ async def app_env(tmp_path: Path, settings: Settings, clock: FakeClock, detector
                     await auth.create_user(TenantId(t), UserId(u), Sensitive(PASSWORD), scopes)
             transport = httpx.ASGITransport(app=app, raise_app_exceptions=False)
             async with httpx.AsyncClient(transport=transport, base_url="http://api") as api:
-                env = AppEnv(app, api, kms)
+                env = AppEnv(app, api, kms, llm)
                 for t in tenants:
                     for u in users:
                         r = await api.post("/auth/login", json={

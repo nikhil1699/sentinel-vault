@@ -84,6 +84,13 @@ class Settings(BaseSettings):
     max_text_chars: int = Field(default=200_000, ge=1_000, le=2_000_000)
     max_fields: int = Field(default=100, ge=1, le=1000)
 
+    # --- M6/M7: query, egress, jobs -------------------------------------------------------
+    query_max_chars: int = Field(default=2_000, ge=10, le=20_000)
+    query_max_top_k: int = Field(default=20, ge=1, le=100)
+    llm_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    llm_max_answer_chars: int = Field(default=20_000, ge=100, le=200_000)
+    job_batch_size: int = Field(default=50, ge=1, le=10_000)
+
     @property
     def keyring_db_path(self) -> Path:
         """Tenant -> CMK mapping, wrapped DEKs, data policies. No customer data here."""
