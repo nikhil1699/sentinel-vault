@@ -70,7 +70,7 @@ def build_presidio_analyzer() -> Analyzer:
     return engine  # type: ignore[return-value]
 
 
-def _merge(spans: list[Span]) -> list[Span]:
+def merge_spans(spans: list[Span]) -> list[Span]:
     """Union overlapping spans; keep the entity of the highest-scoring member."""
     out: list[Span] = []
     for s in sorted(spans, key=lambda x: (x.start, -x.end)):
@@ -81,6 +81,29 @@ def _merge(spans: list[Span]) -> list[Span]:
         else:
             out.append(s)
     return out
+
+
+def prefer_known(detected: list[Span], known: list[Span]) -> list[Span]:
+    """Known values keep their exact span (so they map to the same token everywhere).
+    Detected spans that overlap them are trimmed to the parts outside, never dropped,
+    so no detected character is left uncovered."""
+    known = merge_spans(known)
+    out = list(known)
+    for d in merge_spans(detected):
+        pieces = [(d.start, d.end)]
+        for k in known:
+            nxt = []
+            for a, b in pieces:
+                if b <= k.start or a >= k.end:
+                    nxt.append((a, b))
+                else:
+                    if a < k.start:
+                        nxt.append((a, k.start))
+                    if b > k.end:
+                        nxt.append((k.end, b))
+            pieces = nxt
+        out += [Span(a, b, d.entity, d.score) for a, b in pieces if b > a]
+    return sorted(out, key=lambda s: s.start)
 
 
 class PiiDetector:
@@ -108,7 +131,7 @@ class PiiDetector:
             o_start, o_end = to_original_span(idx, start, end)
             spans.append(Span(o_start, o_end, str(r.entity_type),  # type: ignore[attr-defined]
                               float(r.score)))  # type: ignore[attr-defined]
-        return _merge(spans)
+        return merge_spans(spans)
 
     async def detect(self, text: str) -> list[Span]:
         return await asyncio.to_thread(self.detect_sync, text)

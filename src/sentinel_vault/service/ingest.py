@@ -14,6 +14,7 @@ It never reaches chunks, embeddings or logs.
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -28,7 +29,7 @@ from sentinel_vault.domain.auth import Principal
 from sentinel_vault.domain.ids import ChunkId, DocumentId, TenantId, WorkspaceId
 from sentinel_vault.persistence.keyring_store import KeyringStore, Purpose
 from sentinel_vault.persistence.vector_store import ChunkRow, DocumentRow, VectorStore
-from sentinel_vault.privacy.detector import PiiDetector, Span
+from sentinel_vault.privacy.detector import PiiDetector, Span, prefer_known
 from sentinel_vault.privacy.policy import DataPolicy, FieldAction
 from sentinel_vault.retrieval.chunking import chunk_text, encode_chunk
 from sentinel_vault.retrieval.embedder import Embedder
@@ -75,6 +76,24 @@ class PolicyService:
 
     async def set(self, tenant_id: TenantId, policy: DataPolicy) -> None:
         await self._store.set_policy(tenant_id, policy.model_dump_json(), self._clock())
+
+
+def known_value_spans(text: str, whole: list[tuple[str, str]]) -> list[Span]:
+    """Occurrences of declared-sensitive field values inside free text.
+
+    Entity ``FIELD_<NAME>`` gives the same token as the field itself (same HMAC input),
+    so the field and its mentions in text link up.
+    """
+    spans: list[Span] = []
+    for name, value in whole:
+        v = value.strip()
+        if len(v) < 3:
+            continue
+        parts = [re.escape(p) for p in re.split(r"[\s\-.()/_]+", v) if p]
+        rx = re.compile(r"(?<!\w)" + r"[\s\-.()/_]*".join(parts) + r"(?!\w)", re.IGNORECASE)
+        spans += [Span(m.start(), m.end(), f"FIELD_{name.upper()}", 1.0)
+                  for m in rx.finditer(text)]
+    return spans
 
 
 def _replace(text: str, spans: list[Span], tokens: list[str]) -> str:
@@ -135,9 +154,11 @@ class IngestService:
                 scan_fields.append(name)
                 kept[name] = str(value)
 
-        # 2. Detect (fails closed).
+        # 2. Detect (fails closed). Values the tenant declared sensitive (tokenize fields)
+        #    are also swept from free text, so an NER miss on e.g. a rare name can't leak.
         texts = [str(kept[n]) for n in scan_fields] + ([req.text] if req.text else [])
-        spans_per_text = [await self._det.detect(t) for t in texts]
+        spans_per_text = [
+            prefer_known(await self._det.detect(t), known_value_spans(t, whole)) for t in texts]
 
         # 3. Tokens for every finding in one HMAC-key access.
         items: list[tuple[str, str]] = [(f"FIELD_{n.upper()}", v) for n, v in whole]

@@ -47,7 +47,7 @@ async def env(tmp_path: Path, settings: Settings, clock: FakeClock, detector: Pi
 async def test_store_and_retrieve_original(env: AppEnv) -> None:
     res = await env.ingest("acme", RECORD)
     assert res["chunks"] >= 1 and res["dropped_fields"] == 2
-    assert res["tokenized_entities"]["FIELD_SSN"] == 1
+    assert res["tokenized_entities"]["FIELD_SSN"] >= 1  # field + text mention
     assert not any(v in json.dumps(res) for v in RAW_PHI)
     r = await env.api.get(f"/documents/{res['doc_id']}?view=original", headers=env.h("acme"))
     assert r.status_code == 200

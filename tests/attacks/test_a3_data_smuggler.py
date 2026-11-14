@@ -118,7 +118,8 @@ async def test_hard_check_blocks_when_detector_misses(env: AppEnv) -> None:
     qs._guard._det = Det(Blind(), 0.35)
     lax = DataPolicy(fields={**CLINIC_POLICY.fields, "comment": FieldAction.ALLOW})
     await env.api.put("/tenant/policy", headers=env.h("acme"), json=lax.model_dump(mode="json"))
-    await env.ingest("acme", {"fields": {"comment": f"kidney stones {SSN}"}})
+    unseen = "246-80-1357"  # not in the vault, so only the hard check can stop it
+    await env.ingest("acme", {"fields": {"comment": f"kidney stones {unseen}"}})
     before = env.llm_received()
     try:
         r = await env.query("acme", "kidney stones", top_k=20)
@@ -126,3 +127,47 @@ async def test_hard_check_blocks_when_detector_misses(env: AppEnv) -> None:
         qs._guard._det = real
     assert r.status_code == 422 and r.json()["error"]["code"] == "policy_violation"
     assert env.llm_received() == before  # nothing sent
+
+
+# --- NER miss on a rare name (found by the end-to-end run) ------------------------------
+
+RARE = "Zelda Quint"  # spaCy en_core_web_lg does not tag this as PERSON
+
+
+async def test_rare_name_in_same_record_text(env: AppEnv) -> None:
+    """The tenant declared patient_name sensitive; its mentions in text are swept too."""
+    await env.ingest("acme", {"fields": {"patient_name": RARE, "ssn": "321-54-9876"},
+                              "text": f"{RARE} has asthma. Call (212) 555-0199."})
+    r = await env.api.post("/query", headers=env.h("acme"),
+                           json={"question": "who has asthma", "top_k": 20})
+    assert r.status_code == 200
+    got = env.llm_received()
+    assert "Zelda" not in got and "Quint" not in got
+
+
+async def test_rare_name_in_question_and_other_document(env: AppEnv) -> None:
+    """Name known from one record's field; NER misses it in a question and in a text-only
+    document. The vault blind-index lookup tokenizes it in both places."""
+    await env.ingest("acme", {"fields": {"patient_name": RARE}})
+    await env.ingest("acme", {"text": f"Follow-up: {RARE.lower()} has asthma."})
+    r = await env.api.post("/query", headers=env.h("acme"),
+                           json={"question": f"What does {RARE} have?", "top_k": 20})
+    assert r.status_code == 200
+    got = env.llm_received().lower()
+    assert "zelda" not in got and "quint" not in got
+
+
+async def test_field_and_text_tokens_now_link(env: AppEnv) -> None:
+    res = await env.ingest("acme", {"fields": {"patient_name": RARE},
+                                    "text": f"Patient {RARE} seen."})
+    doc = (await env.api.get(f"/documents/{res['doc_id']}", headers=env.h("acme"))).json()
+    assert doc["fields"]["patient_name"] in doc["text"]
+
+
+async def test_blind_lookup_is_tenant_scoped(env: AppEnv) -> None:
+    """Beta's vault knows nothing about acme's patient, so beta gets no hit (and no oracle)."""
+    from sentinel_vault.domain.ids import TenantId
+    await env.ingest("acme", {"fields": {"patient_name": RARE}})
+    tz = env.app.state.tokenizer
+    assert await tz.known_spans(TenantId("acme"), f"about {RARE}")
+    assert await tz.known_spans(TenantId("beta"), f"about {RARE}") == []

@@ -27,7 +27,7 @@ from typing import Final
 import httpx
 
 from sentinel_vault.domain.ids import TenantId
-from sentinel_vault.privacy.detector import PiiDetector
+from sentinel_vault.privacy.detector import PiiDetector, prefer_known
 from sentinel_vault.privacy.normalize import normalize
 from sentinel_vault.security.errors import DependencyUnavailableError, PolicyViolationError
 from sentinel_vault.security.logging import get_logger
@@ -156,7 +156,8 @@ class EgressGuard:
 
         masked = TOKEN_RE.sub(mask, text)
         masked, blobs = remove_encoded_blobs(masked)
-        spans = await self._det.detect(masked)
+        spans = prefer_known(await self._det.detect(masked),
+                             await self._tok.known_spans(tenant, masked))
         if spans:
             items = [(s.entity, masked[s.start:s.end]) for s in spans]
             new = await self._tok.tokens_for(tenant, items)

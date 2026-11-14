@@ -5,7 +5,12 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from sentinel_vault.privacy.detector import DetectionUnavailableError, PiiDetector, Span, _merge
+from sentinel_vault.privacy.detector import (
+    DetectionUnavailableError,
+    PiiDetector,
+    Span,
+    merge_spans,
+)
 from sentinel_vault.privacy.normalize import normalize, normalize_with_map, to_original_span
 from sentinel_vault.privacy.policy import DataPolicy, FieldAction
 from sentinel_vault.retrieval.chunking import chunk_text, decode_chunk, encode_chunk
@@ -72,7 +77,7 @@ def test_fails_closed() -> None:
 
 
 def test_merge_overlaps() -> None:
-    merged = _merge([Span(0, 5, "A", 0.5), Span(3, 9, "B", 0.9), Span(20, 22, "C", 0.4)])
+    merged = merge_spans([Span(0, 5, "A", 0.5), Span(3, 9, "B", 0.9), Span(20, 22, "C", 0.4)])
     assert merged == [Span(0, 9, "B", 0.9), Span(20, 22, "C", 0.4)]
 
 
@@ -137,3 +142,15 @@ async def test_hash_embedder() -> None:
     assert abs(float(np.linalg.norm(v[0])) - 1) < 1e-5
     assert (await e.embed([])).shape == (0, 64)
     assert np.allclose((await e.embed(["!!!"]))[0], 0)
+
+
+def test_prefer_known_keeps_exact_span_and_covers_rest() -> None:
+    from sentinel_vault.privacy.detector import prefer_known
+
+    # detected "Patient Zelda Quint" (0-19); known "Zelda Quint" (8-19)
+    out = prefer_known([Span(0, 19, "PERSON", 0.85)], [Span(8, 19, "FIELD_NAME", 1.0)])
+    assert out == [Span(0, 8, "PERSON", 0.85), Span(8, 19, "FIELD_NAME", 1.0)]
+    # detection inside a known span disappears; detection around it is split
+    out = prefer_known([Span(2, 30, "X", 0.5)], [Span(10, 20, "K", 1.0)])
+    assert [(s.start, s.end) for s in out] == [(2, 10), (10, 20), (20, 30)]
+    assert prefer_known([Span(0, 3, "X", 0.5)], []) == [Span(0, 3, "X", 0.5)]

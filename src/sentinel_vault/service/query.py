@@ -22,7 +22,7 @@ from sentinel_vault.config import Settings
 from sentinel_vault.domain.auth import Principal, Scope
 from sentinel_vault.domain.ids import ChunkId, DocumentId, WorkspaceId
 from sentinel_vault.persistence.vector_store import ChunkRow, VectorStore
-from sentinel_vault.privacy.detector import PiiDetector
+from sentinel_vault.privacy.detector import PiiDetector, prefer_known
 from sentinel_vault.privacy.egress import SYSTEM_PROMPT, EgressGuard, LlmClient
 from sentinel_vault.retrieval.chunking import decode_chunk
 from sentinel_vault.retrieval.embedder import Embedder
@@ -77,7 +77,8 @@ class QueryService:
         self._llm = llm
 
     async def _tokenize_question(self, p: Principal, q: str) -> str:
-        spans = await self._det.detect(q)
+        spans = prefer_known(await self._det.detect(q),
+                             await self._tok.known_spans(p.tenant_id, q))
         if not spans:
             return q
         items = [(s.entity, q[s.start:s.end]) for s in spans]

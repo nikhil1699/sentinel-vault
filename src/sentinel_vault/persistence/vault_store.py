@@ -100,3 +100,10 @@ class VaultStore:
                 vault_entries.c.tenant_id == tenant_id,
                 vault_entries.c.dek_id.in_(dek_ids))))
         return int(res.rowcount)
+
+    async def entities(self, tenant_id: TenantId, prefix: str) -> list[str]:
+        async with self._engine.begin() as conn:
+            rows = (await conn.execute(select(vault_entries.c.entity).distinct().where(and_(
+                vault_entries.c.tenant_id == tenant_id,
+                vault_entries.c.entity.startswith(prefix))))).scalars().all()
+        return sorted(rows)

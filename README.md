@@ -13,7 +13,7 @@ Only prerequisite: **Python 3.12** (macOS or Linux). No Docker, AWS account or A
 ./run.sh demo       # 13-step walkthrough: BYOK → store → retrieve → query → rotate → contain → revoke
 ./run.sh attack     # 4 threat actors, 11 live attacks, pass/fail table; exits 1 on any breach
 ./run.sh simulate   # 10 tenants × 3 users × 2 sessions querying at once; checks isolation
-./run.sh test       # 379 tests (unit, integration, attack suites), no services needed
+./run.sh test       # 384 tests (unit, integration, attack suites), no services needed
 ./run.sh verify     # ruff + mypy --strict + tests + coverage gate (≥ 85%, currently ~97%)
 ./run.sh stop       # stop services        ./run.sh reset   # delete all data and keys
 ```
@@ -144,8 +144,9 @@ tenant, encrypted under each customer's key.
 - Plaintext lives briefly in Python memory; zeroing is best effort.
 - Up to TTL (5 min) of access after a customer revokes, unless they flush.
 - NER can miss PII in **free text** that matches no hard pattern (e.g. an unusual name).
-  The stored and retrieved value is still tokenized-or-encrypted; the gap is only what
-  the LLM may read in that chunk.
+  If that value is declared in a tokenized field anywhere in the tenant, a vault
+  blind-index lookup still catches it at ingest, in questions and at egress. A name that
+  appears **only** in free text and that NER misses can still reach the LLM.
 - Simulated KMS root keys sit in plain files (no HSM, no multi-party control, no rotation).
 - Plaintext DEKs cross loopback HTTP between our service and the KMS; production needs TLS.
 
@@ -201,6 +202,7 @@ first (`PLAN.md`), one or two milestones at a time with a test gate after each
 | Wiring the KMS policy semantics after AWS KMS | Spaced-digit SSNs slipped past the detector; a probe script showed it → recognizer widened |
 | Writing the attack suites | A `zip(strict=True)` bug broke 22 ingest tests; the message-free traceback (`ingest.py:155`) pointed straight at it |
 | | The egress MRN regex matched the **label** "mrn:" followed by the next field name and blocked every simulator query; found by `./run.sh simulate` |
+| | End-to-end curl run: spaCy missed the rare name "Zelda Quint", so it reached the LLM. Fixed with a known-value sweep and a vault blind-index lookup; regression tests in the A3 suite |
 | | `./run.sh verify` first let lint failures pass (`a && b` under `set -e`); fixed when a red step printed `[ok]` |
 | | A fresh-clone check once ran in parallel with the commit it was meant to test; re-run strictly after |
 
