@@ -120,10 +120,11 @@ class AuthService:
             self._verify, user.password_hash if user else self._dummy_hash,
             pw if len(pw) <= _MAX_PASSWORD_LENGTH else "")
         if user is None or not ok or user.disabled:
-            for key in (user_key, ip_key):
+            for key, limit in ((user_key, self._s.login_max_failures),
+                               (ip_key, self._s.login_ip_max_failures)):
                 await self._store.record_failure(
-                    key, now, self._s.login_max_failures,
-                    self._s.login_lockout_base_seconds, self._s.login_lockout_max_seconds)
+                    key, now, limit, self._s.login_lockout_base_seconds,
+                    self._s.login_lockout_max_seconds, self._s.login_failure_window_seconds)
             log.info("login_failed", tenant_id=tenant_id)
             raise AuthenticationError
 

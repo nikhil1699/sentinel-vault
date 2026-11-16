@@ -254,7 +254,7 @@ async def test_lockout_also_for_unknown_users(svc: AuthService, settings: Settin
 async def test_ip_lockout_stops_password_spraying(svc: AuthService,
                                                   settings: Settings) -> None:
     bad = Sensitive("wrong password here")
-    users = [UserId(f"user{i}") for i in range(settings.login_max_failures)]
+    users = [UserId(f"user{i}") for i in range(settings.login_ip_max_failures)]
     for u in users:
         with pytest.raises(AuthenticationError):
             await svc.login(ACME, u, bad, "10.6.6.6")
@@ -359,4 +359,46 @@ async def test_concurrent_logins_respect_cap(settings: Settings, clock: FakeCloc
     await svc.create_user(ACME, ALICE, PW, [Scope.QUERY])
     await asyncio.gather(*(svc.login(ACME, ALICE, PW, "127.0.0.1") for _ in range(12)))
     assert await store.count_live_sessions(ACME, clock(), clock() - 1800) == 3
+    await engine.dispose()
+
+
+async def test_one_user_lockout_does_not_lock_the_whole_ip(svc: AuthService,
+                                                           settings: Settings) -> None:
+    """Regression: users behind one IP (NAT, loopback) were all locked out by one
+    user's typos, because the IP limit equalled the per-user limit."""
+    bad = Sensitive("wrong password here")
+    for _ in range(settings.login_max_failures):
+        with pytest.raises(AuthenticationError):
+            await svc.login(ACME, ALICE, bad, "10.9.9.9")
+    with pytest.raises(RateLimitedError):
+        await svc.login(ACME, ALICE, PW, "10.9.9.9")       # alice is locked
+    await svc.login(ACME, BOB, PW, "10.9.9.9")             # bob on the same IP is not
+
+
+async def test_failure_count_resets_after_quiet_window(svc: AuthService, settings: Settings,
+                                                       clock: FakeClock) -> None:
+    bad = Sensitive("wrong password here")
+    for _ in range(settings.login_max_failures - 1):
+        with pytest.raises(AuthenticationError):
+            await svc.login(ACME, BOB, bad, "10.8.8.8")
+    clock.advance(settings.login_failure_window_seconds + 1)
+    with pytest.raises(AuthenticationError):               # count restarted at 1
+        await svc.login(ACME, BOB, bad, "10.8.8.8")
+    await svc.login(ACME, BOB, PW, "10.8.8.8")             # not locked
+
+
+async def test_migrates_old_login_failures_table(settings: Settings) -> None:
+    import sqlite3
+
+    settings.data_dir.mkdir(parents=True, mode=0o700)
+    with sqlite3.connect(settings.auth_db_path) as db:
+        db.execute("create table login_failures (key varchar(128) primary key, "
+                   "count integer not null, locked_until float not null)")
+        db.execute("insert into login_failures values ('ip:1.2.3.4', 7, 0)")
+    settings.auth_db_path.chmod(0o600)
+    engine = create_sqlite_engine(settings.auth_db_path)
+    store = AuthStore(engine)
+    await store.create_schema()
+    await store.create_schema()  # idempotent
+    assert await store.record_failure("ip:1.2.3.4", 1e9, 20, 1.0, 900.0, 900.0) == 1
     await engine.dispose()

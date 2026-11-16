@@ -67,6 +67,7 @@ login_failures = Table(
     Column("key", String(128), primary_key=True),
     Column("count", Integer, nullable=False),
     Column("locked_until", Float, nullable=False),
+    Column("last_failure", Float, nullable=True),
 )
 
 
@@ -116,6 +117,12 @@ class AuthStore:
     async def create_schema(self) -> None:
         async with self._engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
+            # In-place migration for databases created before last_failure existed.
+            cols = {str(r._mapping["name"]) for r in (await conn.exec_driver_sql(
+                "PRAGMA table_info(login_failures)")).all()}
+            if "last_failure" not in cols:
+                await conn.exec_driver_sql(
+                    "ALTER TABLE login_failures ADD COLUMN last_failure FLOAT")
 
     # --- tenants -----------------------------------------------------------------
 
@@ -293,20 +300,24 @@ class AuthStore:
         return 0.0 if r is None else float(r[0])
 
     async def record_failure(self, key: str, now: float, threshold: int, base: float,
-                             cap: float) -> int:
+                             cap: float, window: float = 900.0) -> int:
+        """Count a failed login. The count restarts after ``window`` seconds without a
+        failure, so old typos never add up to a permanent, ever-growing lockout."""
         async with self._engine.begin() as conn:
-            r = (await conn.execute(select(login_failures.c.count)
+            r = (await conn.execute(select(login_failures.c.count,
+                                           login_failures.c.last_failure)
                                     .where(login_failures.c.key == key))).first()
-            count = 1 if r is None else int(r[0]) + 1
+            stale = r is None or now - float(r[1] or 0.0) > window
+            count = 1 if stale else int(r[0]) + 1  # type: ignore[index]
             locked = 0.0
             if count >= threshold:
                 locked = now + min(cap, base * (2 ** (count - threshold)))
             if r is None:
                 await conn.execute(login_failures.insert().values(
-                    key=key, count=count, locked_until=locked))
+                    key=key, count=count, locked_until=locked, last_failure=now))
             else:
                 await conn.execute(update(login_failures).where(login_failures.c.key == key)
-                                   .values(count=count, locked_until=locked))
+                                   .values(count=count, locked_until=locked, last_failure=now))
         return count
 
     async def clear_failures(self, key: str) -> None:

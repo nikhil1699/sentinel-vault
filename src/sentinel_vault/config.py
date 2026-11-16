@@ -65,6 +65,11 @@ class Settings(BaseSettings):
 
     # Login throttling, per attempted user and per client IP.
     login_max_failures: int = Field(default=5, ge=1, le=100)
+    # Per client IP: higher than per user, because many users can share one IP (NAT,
+    # loopback). Still stops password spraying across many usernames.
+    login_ip_max_failures: int = Field(default=20, ge=1, le=1000)
+    # Failure counters reset after this long without a new failure.
+    login_failure_window_seconds: float = Field(default=900.0, ge=1.0, le=86_400.0)
     login_lockout_base_seconds: float = Field(default=1.0, ge=0.0, le=60.0)
     login_lockout_max_seconds: float = Field(default=900.0, ge=1.0, le=86_400.0)
 
