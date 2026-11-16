@@ -1,4 +1,7 @@
-"""Print what the PII detector finds in sample text. Dev aid: ``python scripts/probe_detector.py``."""
+"""Print what the PII detector finds in sample text.
+
+Dev aid: ``python scripts/probe_detector.py``.
+"""
 
 from __future__ import annotations
 

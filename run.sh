@@ -326,6 +326,7 @@ case "$cmd" in
   reset)    cmd_reset ;;
   logs)     cmd_logs "$@" ;;
   demo)     ensure_up; "$PY" -m reviewer_kit.demo "$@" ;;
+  customer|password) ensure_up >/dev/null; "$PY" -m reviewer_kit.cli "$cmd" "$@" ;;
   tour)
     FRESH=0; TOUR_ARGS=()
     for a in "$@"; do [[ $a == --fresh ]] && FRESH=1 || TOUR_ARGS+=("$a"); done
