@@ -159,3 +159,19 @@ async def test_demo_explains_each_step_and_can_pause(stack: Stack) -> None:
     assert text.count("what's happening:") == demo.TOTAL
     assert text.count("✔ proves:") == demo.TOTAL
     assert len(pauses) == demo.TOTAL - 1
+
+
+async def test_tour_runs_every_chapter_and_all_checks_pass(stack: Stack) -> None:
+    from reviewer_kit import tour
+
+    lines: list[str] = []
+    passed = await tour.run_tour(stack, lines.append, delay=0, tenants=2)
+    text = "\n".join(lines)
+    failed = [x for x in lines if "✘" in x]
+    assert passed, "\n".join(failed)
+    for n in range(1, 12):
+        assert f"CHAPTER {n}/11" in text
+    assert "SCOREBOARD" in text and "checks passed" in text
+    llm_part = text.split("EVERYTHING the external LLM received")[1].split("✔ no raw PII")[0]
+    for v in tour.RAW:
+        assert v not in llm_part, v

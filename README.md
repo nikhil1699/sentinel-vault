@@ -10,10 +10,12 @@ Only prerequisite: **Python 3.12** (macOS or Linux). No Docker, AWS account or A
 
 ```bash
 ./run.sh            # install, start 3 services, seed 10 tenants, smoke test (~2 min first run)
+./run.sh tour       # SIT BACK: the whole project end to end, narrated + checked (~4 min)
+                    #   --fresh starts from zero (setup included), --fast skips pauses
 ./run.sh demo       # 13-step walkthrough: BYOK → store → retrieve → query → rotate → contain → revoke
 ./run.sh attack     # 4 threat actors, 11 live attacks, pass/fail table; exits 1 on any breach
 ./run.sh simulate   # 10 tenants × 3 users × 2 sessions querying at once; checks isolation
-./run.sh test       # 397 tests (unit, integration, attack suites), no services needed
+./run.sh test       # 398 tests (unit, integration, attack suites), no services needed
 ./run.sh verify     # ruff + mypy --strict + tests + coverage gate (≥ 85%, currently ~97%)
 ./run.sh logs       # follow all service logs, readable (already redacted)
 ./run.sh stop       # stop services        ./run.sh reset   # delete all data and keys

@@ -2,6 +2,8 @@
 # Sentinel Vault: one command to set up, run and test everything. See README.
 #
 #   ./run.sh              setup (if needed) + start services + seed 10 tenants + smoke test
+#   ./run.sh tour         hands-free end-to-end tour of EVERYTHING, narrated and checked
+#                         (--fresh: start from zero, --fast: no pauses)
 #   ./run.sh demo         guided walkthrough   (--pause: wait for Enter between steps)
 #   ./run.sh attack       4 threat actors against the live services
 #   ./run.sh simulate     10 tenants x 3 users x 2 sessions at once
@@ -218,6 +220,7 @@ ${C_OK}${C_BOLD}Sentinel Vault is up${C_OFF} ${C_DIM}($((SECONDS - T0))s)${C_OFF
   Logs         ./run.sh logs   ($LOG_DIR/)
 
 Try next:
+  ./run.sh tour       sit back: the whole project end to end, narrated (~4 min)
   ./run.sh demo       13-step walkthrough (add --pause to step through it)
   ./run.sh attack     11 live attacks by 4 threat actors
   ./run.sh simulate   60 concurrent sessions across 10 tenants
@@ -323,8 +326,22 @@ case "$cmd" in
   reset)    cmd_reset ;;
   logs)     cmd_logs "$@" ;;
   demo)     ensure_up; "$PY" -m reviewer_kit.demo "$@" ;;
+  tour)
+    FRESH=0; TOUR_ARGS=()
+    for a in "$@"; do [[ $a == --fresh ]] && FRESH=1 || TOUR_ARGS+=("$a"); done
+    if [[ $FRESH == 1 ]]; then
+      info "--fresh: wiping all local data and keys, then setting everything up from zero"
+      note "undo: none needed — it only deletes .run/ and .secrets/ (demo data)"
+      cmd_stop >/dev/null 2>&1 || true
+      rm -rf "$ROOT/.run" "$ROOT/.secrets"
+      cmd_up
+      sleep 2
+    else
+      ensure_up
+    fi
+    "$PY" -m reviewer_kit.tour --transcript-dir "$RUN_DIR" ${TOUR_ARGS[@]+"${TOUR_ARGS[@]}"} ;;
   attack)   ensure_up; "$PY" -m reviewer_kit.attack ;;
   simulate) ensure_up; "$PY" -m reviewer_kit.simulate ;;
-  -h|--help|help) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) fail "unknown command '$cmd' (use: up | demo | attack | simulate | logs | test | verify | status | stop | reset)" ;;
+  -h|--help|help) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) fail "unknown command '$cmd' (use: up | tour | demo | attack | simulate | logs | test | verify | status | stop | reset)" ;;
 esac
