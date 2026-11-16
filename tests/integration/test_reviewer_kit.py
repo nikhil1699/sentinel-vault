@@ -165,8 +165,13 @@ async def test_tour_runs_every_chapter_and_all_checks_pass(stack: Stack) -> None
     from reviewer_kit import tour
 
     lines: list[str] = []
-    passed = await tour.run_tour(stack, lines.append, delay=0, tenants=2)
+    prompts: list[int] = []
+    passed = await tour.run_tour(stack, lines.append, delay=0, tenants=2,
+                                 prompt=lambda: prompts.append(1))
     text = "\n".join(lines)
+    assert len(prompts) == 12  # once before chapter 1, once after each chapter
+    assert text.count("✔ Done:") == 11 and text.count("➜ Next:") == 12
+    assert "➜ Next: the scoreboard" in text
     failed = [x for x in lines if "✘" in x]
     assert passed, "\n".join(failed)
     for n in range(1, 12):

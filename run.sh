@@ -2,8 +2,8 @@
 # Sentinel Vault: one command to set up, run and test everything. See README.
 #
 #   ./run.sh              setup (if needed) + start services + seed 10 tenants + smoke test
-#   ./run.sh tour         hands-free end-to-end tour of EVERYTHING, narrated and checked
-#                         (--fresh: start from zero, --fast: no pauses)
+#   ./run.sh tour         guided end-to-end tour of EVERYTHING; Enter between chapters
+#                         (--auto: hands-free, --fresh: start from zero, --fast: no pauses)
 #   ./run.sh demo         guided walkthrough   (--pause: wait for Enter between steps)
 #   ./run.sh attack       4 threat actors against the live services
 #   ./run.sh simulate     10 tenants x 3 users x 2 sessions at once
@@ -220,7 +220,7 @@ ${C_OK}${C_BOLD}Sentinel Vault is up${C_OFF} ${C_DIM}($((SECONDS - T0))s)${C_OFF
   Logs         ./run.sh logs   ($LOG_DIR/)
 
 Try next:
-  ./run.sh tour       sit back: the whole project end to end, narrated (~4 min)
+  ./run.sh tour       the whole project end to end, Enter between chapters (--auto: hands-free)
   ./run.sh demo       13-step walkthrough (add --pause to step through it)
   ./run.sh attack     11 live attacks by 4 threat actors
   ./run.sh simulate   60 concurrent sessions across 10 tenants

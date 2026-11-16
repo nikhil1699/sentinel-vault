@@ -51,6 +51,7 @@ async def demo(stack: Stack, out: Callable[[str], None] = print,
                pause: Callable[[], None] | None = None) -> None:
     def step(n: int, title: str, what: str, body: object, proves: str) -> None:
         if pause is not None and n > 1:
+            out(paint("    ➜ Next: ", "blue", "bold") + title)
             pause()
         out("")
         out(paint(f"=== {n}. {title} ===", "bold") + paint(f"  [{n}/{TOTAL}]", "dim"))

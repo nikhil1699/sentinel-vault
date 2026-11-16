@@ -1,7 +1,8 @@
-"""Hands-free, end-to-end tour of the whole project. ``./run.sh tour``.
+"""Guided end-to-end tour of the whole project. ``./run.sh tour``.
 
-Runs on its own and narrates every step with the real API output, so a reviewer can sit
-back and watch. Each step also *checks* what it claims; the tour ends with a scoreboard
+Narrates every step with the real API output. After each chapter it says what was done
+and what comes next, then waits for Enter (``--auto`` runs hands-free; so does a
+non-terminal stdin). Each step also *checks* what it claims; the tour ends with a scoreboard
 and exits non-zero if any check failed. A plain-text transcript is written to
 ``.run/tour-<time>.log``.
 
@@ -203,9 +204,6 @@ class Tour:
         return c
 
     async def ch1_customers(self) -> None:
-        await self.chapter(1, "Two new customers sign up",
-                           "Bring Your Own Key: each customer keeps the master key; we only "
-                           "get permission to use it for their tenant.")
         self.hospital = await self.signup("hospital", "Hospital")
         self.insurer = await self.signup("insurer", "Insurer")
         bad = await self.stack.api.put("/tenant/kms", headers=self.insurer.h(), json={
@@ -216,8 +214,6 @@ class Tour:
 
     async def ch2_sessions(self) -> None:
         h = self._need(self.hospital)
-        await self.chapter(2, "Users log in",
-                           "Server-side sessions: many at once, each revocable on its own.")
         laptop = await self._login(h, "analyst")
         agent = await self._login(h, "analyst")
         await self.act("user", "analyst logs in from a laptop and from an AI agent runner "
@@ -250,9 +246,6 @@ class Tour:
 
     async def ch3_store(self) -> None:
         h = self._need(self.hospital)
-        await self.chapter(3, "Store patient records",
-                           "PII becomes tokens; everything is encrypted with a data key that "
-                           "only the customer's master key can unlock.")
         for p in PATIENTS:
             r = await self.stack.api.post("/documents", headers=h.h("loader"), json=p)
             body = r.json()
@@ -280,8 +273,6 @@ class Tour:
 
     async def ch4_retrieve(self) -> None:
         h, ins = self._need(self.hospital), self._need(self.insurer)
-        await self.chapter(4, "Retrieve", "Authorized users get the original; everyone "
-                                          "else gets tokens, 403 or 404.")
         doc = self.docs[0]
         tok = (await self.stack.api.get(f"/documents/{doc}", headers=h.h("analyst"))).json()
         await self.act("user", "analyst reads record 1 (scope: query) → tokenized view:")
@@ -303,9 +294,6 @@ class Tour:
 
     async def ch5_query(self) -> None:
         h = self._need(self.hospital)
-        await self.chapter(5, "Agentic query across the PHI boundary",
-                           "Search only this tenant, mask everything, check it twice, then "
-                           "call the external LLM.")
         await self.stack.api.post("/tenant/cache/flush", headers=h.h())
         seq = await self._last_seq(h)
         before = len(await llm_received(self.stack))
@@ -333,8 +321,6 @@ class Tour:
 
     async def ch6_audit(self) -> None:
         h, ins = self._need(self.hospital), self._need(self.insurer)
-        await self.chapter(6, "The customer's view of us",
-                           "Every use of their key is in THEIR audit log — allowed or denied.")
         rogue = KmsClient(self.stack.kms, account=h.tenant,
                           principal=self.stack.service_principal,
                           private_key=self.stack.service_key)
@@ -361,9 +347,6 @@ class Tour:
 
     async def ch7_rotate(self) -> None:
         h = self._need(self.hospital)
-        await self.chapter(7, "Customer rotates their master key",
-                           "New key version; we re-wrap every data key inside the vault. "
-                           "No downtime, nothing re-encrypted.")
         v = await h.kms_admin(self.stack).rotate_key(h.cmk_id)
         await self.act("customer", f"RotateKey → master key is now v{v} (v1 can still decrypt)")
         job = (await self.stack.api.post("/tenant/keys/rewrap", headers=h.h())).json()["job_id"]
@@ -385,9 +368,6 @@ class Tour:
 
     async def ch8_contain(self) -> None:
         h, ins = self._need(self.hospital), self._need(self.insurer)
-        await self.chapter(8, "Containment after a suspected key leak",
-                           "Freeze one tenant, new keys, re-encrypt everything, destroy the "
-                           "old keys. Other tenants don't notice.")
         before = (await self.stack.api.get(f"/documents/{self.docs[0]}",
                                            headers=h.h())).json()["fields"]["ssn"]
         with self._db("keyring.db") as db:
@@ -424,9 +404,6 @@ class Tour:
 
     async def ch9_revoke(self) -> None:
         h, ins = self._need(self.hospital), self._need(self.insurer)
-        await self.chapter(9, "Customer revokes their key",
-                           "The customer's kill switch: disable the master key and the data "
-                           "is unreadable — even though it is still on our disk.")
         await h.kms_admin(self.stack).disable_key(h.cmk_id)
         await self.act("customer", f"DisableKey {h.cmk_id}")
         f = await self.stack.api.post("/tenant/cache/flush", headers=h.h())
@@ -450,17 +427,11 @@ class Tour:
                          back.status_code == 200)
 
     async def ch10_attacks(self) -> None:
-        await self.chapter(10, "Four threat actors attack the live system",
-                           "Each attack runs for real; the mock LLM obeys every injected "
-                           "instruction.")
         outcomes = await attack.run_attacks(self.stack, self.out)
         await self.check(f"{sum(o.defended for o in outcomes)}/{len(outcomes)} attacks defended",
                          all(o.defended for o in outcomes))
 
     async def ch11_concurrency(self, tenants: int) -> None:
-        await self.chapter(11, "Many tenants at the same time",
-                           f"{tenants} seeded tenants × 3 users × 2 sessions, "
-                           "all querying at once.")
         await seed.seed(self.stack, count=tenants, docs=1)
         r = await simulate.simulate(self.stack, count=tenants, out=self.out)
         for f in r.failures:
@@ -490,34 +461,106 @@ class Tour:
         return n == total
 
 
+# (title, why it matters, what we just did) — one row per chapter, in order.
+CHAPTERS: Final[list[tuple[str, str, str]]] = [
+    ("Two new customers sign up",
+     "Bring Your Own Key: each customer keeps the master key; we only get permission to "
+     "use it for their tenant.",
+     "two customers onboarded with their own master keys; the insurer could not use the "
+     "hospital's key"),
+    ("Users log in",
+     "Server-side sessions: many at once, each revocable on its own.",
+     "an analyst held two sessions and logged one out; bad logins all looked the same"),
+    ("Store patient records",
+     "PII becomes tokens; everything is encrypted with a data key that only the customer's "
+     "master key can unlock.",
+     "3 records stored — PII tokenized, encrypted, and nothing readable on disk"),
+    ("Retrieve",
+     "Authorized users get the original; everyone else gets tokens, 403 or 404.",
+     "tokens for the analyst, the original for the admin, 403/404 for everyone else"),
+    ("Agentic query across the PHI boundary",
+     "Search only this tenant, mask everything, check it twice, then call the external LLM.",
+     "the LLM saw only tokens, we re-identified the answer locally, and the cache cut KMS "
+     "calls to 0"),
+    ("The customer's view of us",
+     "Every use of their key is in THEIR audit log — allowed or denied.",
+     "the customer saw every key use, including our blocked cross-tenant call"),
+    ("Customer rotates their master key",
+     "New key version; we re-wrap every data key inside the vault. No downtime, nothing "
+     "re-encrypted.",
+     "master key rotated and every data key re-wrapped while reads kept working"),
+    ("Containment after a suspected key leak",
+     "Freeze one tenant, new keys, re-encrypt everything, destroy the old keys. Other "
+     "tenants don't notice.",
+     "the hospital was re-keyed and re-encrypted; old keys and tokens are dead; the insurer "
+     "never noticed"),
+    ("Customer revokes their key",
+     "The customer's kill switch: disable the master key and the data is unreadable — even "
+     "though it is still on our disk.",
+     "a disabled key made all hospital data unreadable; re-enabling brought it back"),
+    ("Four threat actors attack the live system",
+     "Each attack runs for real; the mock LLM obeys every injected instruction.",
+     "every live attack was stopped"),
+    ("Many tenants at the same time",
+     "{tenants} seeded tenants × 3 users × 2 sessions, all querying at once.",
+     "{tenants} tenants ran at once and no data crossed between them"),
+]
+
+Prompt = Callable[[], None]
+
+
 async def run_tour(stack: Stack, out: Callable[[str], None] = print, delay: float = 0.0,
-                   tenants: int = 10) -> bool:
+                   tenants: int = 10, prompt: Prompt | None = None) -> bool:
+    """Run every chapter. After each one: what was done, what comes next, and — if
+    ``prompt`` is given — wait for the reader (e.g. Enter) before continuing."""
     t = Tour(stack, out, delay)
     start = time.monotonic()
-    out(paint("Sentinel Vault — hands-free tour", "bold"))
+    out(paint("Sentinel Vault — guided end-to-end tour", "bold"))
     out(paint("BYOK envelope encryption + PHI protection for an agentic RAG system. "
               "Every line below is a real call to the running services.", "dim"))
     out("")
     out("  actors:  " + "  ".join(paint(a, s, "bold") for a, s in ACTOR_STYLE.items()
                                   if a != "kms") + paint("   (kms = the customer's vault)", "dim"))
     out(paint("  tokens look like <<PERSON_…>> (magenta); key / record ids are cyan", "dim"))
-    await t.pause(2)
-    await t.ch1_customers()
-    await t.ch2_sessions()
-    await t.ch3_store()
-    await t.ch4_retrieve()
-    await t.ch5_query()
-    await t.ch6_audit()
-    await t.ch7_rotate()
-    await t.ch8_contain()
-    await t.ch9_revoke()
-    await t.ch10_attacks()
-    await t.ch11_concurrency(tenants)
+    steps: list[Callable[[], Any]] = [
+        t.ch1_customers, t.ch2_sessions, t.ch3_store, t.ch4_retrieve, t.ch5_query,
+        t.ch6_audit, t.ch7_rotate, t.ch8_contain, t.ch9_revoke, t.ch10_attacks,
+        lambda: t.ch11_concurrency(tenants)]
+    total = len(CHAPTERS)
+
+    def next_line(i: int) -> str:
+        if i >= total:
+            return "the scoreboard: every check from every chapter"
+        title, why, _ = CHAPTERS[i]
+        return f"Chapter {i + 1}: {title} — {why.format(tenants=tenants)}"
+
+    out("")
+    out(paint("  ➜ Next: ", "blue", "bold") + next_line(0))
+    if prompt:
+        prompt()
+    else:
+        await t.pause(2)
+    for i, (run, (title, why, done)) in enumerate(zip(steps, CHAPTERS, strict=True)):
+        await t.chapter(i + 1, title, why.format(tenants=tenants))
+        before = len(t.checks)
+        await run()
+        mine = [ok for *_, ok in t.checks[before:]]
+        good = all(mine)
+        out("")
+        mark = paint("  ✔ Done: ", "green", "bold") if good else \
+            paint("  ✘ Done, with failures: ", "red", "bold")
+        out(f"{mark}{done.format(tenants=tenants)}  "
+            + paint(f"({sum(mine)}/{len(mine)} checks)", "dim"))
+        out(paint("  ➜ Next: ", "blue", "bold") + next_line(i + 1))
+        if prompt:
+            prompt()
     return t.scoreboard(time.monotonic() - start)
 
 
 async def _main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="run.sh tour")
+    p.add_argument("--auto", action="store_true",
+                   help="hands-free: don't wait for Enter between chapters")
     p.add_argument("--fast", action="store_true", help="no pauses between steps")
     p.add_argument("--delay", type=float, default=1.0, help="seconds per beat (default 1.0)")
     p.add_argument("--transcript-dir", type=Path, default=Path(".run"))
@@ -530,8 +573,20 @@ async def _main(argv: list[str] | None = None) -> int:
             fh.write(_ANSI.sub("", line) + "\n")
             fh.flush()
 
+        def press_enter() -> None:
+            try:
+                answer = input(paint("  ⏎ press Enter to continue (q + Enter to quit) ", "dim"))
+            except EOFError:
+                return
+            if answer.strip().lower() in ("q", "quit", "exit"):
+                raise KeyboardInterrupt
+
+        interactive = not a.auto and sys.stdin.isatty()
+        if not interactive:
+            out(paint("  (hands-free mode: chapters run back to back)", "dim"))
         async with live_stack() as stack:
-            passed = await run_tour(stack, out, 0.0 if a.fast else max(a.delay, 0.0))
+            passed = await run_tour(stack, out, 0.0 if a.fast else max(a.delay, 0.0),
+                                    prompt=press_enter if interactive else None)
         out(paint(f"\n  transcript: {path}", "dim"))
     return 0 if passed else 1
 

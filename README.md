@@ -11,8 +11,8 @@ Only prerequisite: **Python 3.12** (macOS or Linux). No Docker, AWS account or A
 ```bash
 ./run.sh            # install, start 3 services, seed 10 tenants, smoke test (~2 min first run)
 ./run.sh customer new my-clinic   # then follow docs/TRY-IT-YOURSELF.md (copy-paste curl)
-./run.sh tour       # SIT BACK: the whole project end to end, narrated + checked (~4 min)
-                    #   --fresh starts from zero (setup included), --fast skips pauses
+./run.sh tour       # the whole project end to end, narrated + checked; Enter between chapters
+                    #   --auto hands-free, --fresh starts from zero (setup included), --fast no pauses
 ./run.sh demo       # 13-step walkthrough: BYOK → store → retrieve → query → rotate → contain → revoke
 ./run.sh attack     # 4 threat actors, 11 live attacks, pass/fail table; exits 1 on any breach
 ./run.sh simulate   # 10 tenants × 3 users × 2 sessions querying at once; checks isolation
