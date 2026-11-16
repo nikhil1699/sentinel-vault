@@ -10,6 +10,7 @@ Only prerequisite: **Python 3.12** (macOS or Linux). No Docker, AWS account or A
 
 ```bash
 ./run.sh            # install, start 3 services, seed 10 tenants, smoke test (~2 min first run)
+./run.sh customer new my-clinic   # then follow docs/TRY-IT-YOURSELF.md (copy-paste curl)
 ./run.sh tour       # SIT BACK: the whole project end to end, narrated + checked (~4 min)
                     #   --fresh starts from zero (setup included), --fast skips pauses
 ./run.sh demo       # 13-step walkthrough: BYOK → store → retrieve → query → rotate → contain → revoke

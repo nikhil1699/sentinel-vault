@@ -178,7 +178,8 @@ curl -s $API/documents -H "authorization: Bearer $ADMIN" -H 'content-type: appli
 }" -o /dev/null -w '%{http_code}\n'
 curl -s $API/query -H "authorization: Bearer $ADMIN" -H 'content-type: application/json' \
   -d '{"question": "asthma", "top_k": 10}' -o /dev/null -w '%{http_code}\n'
-curl -s $LLM/v1/received | grep -c -e '219-09-9999' -e '2 1 9 - 0 9' -e 'Okafor'   # 0
+if curl -s $LLM/v1/received | grep -q -e '219-09-9999' -e '2 1 9 - 0 9' -e 'Okafor'; then
+  echo "LEAKED"; else echo "nothing leaked to the LLM"; fi
 ```
 
 Pretend to be the other tenant (headers and query params are ignored; the tenant comes
