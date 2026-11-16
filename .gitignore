@@ -10,3 +10,15 @@ __pycache__/
 .run/
 .coverage
 .DS_Store
+# SQLite -wal / -shm side files
+*.db-*
+*.log
+# keys never belong in git (ours live in .secrets/)
+*.pem
+*.key
+.hypothesis/
+htmlcov/
+build/
+dist/
+.idea/
+.vscode/
