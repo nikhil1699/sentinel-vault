@@ -10,6 +10,7 @@ output and exits non-zero if any block fails.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -30,8 +31,14 @@ def blocks() -> list[str]:
 
 def main() -> int:
     shell = sys.argv[1] if len(sys.argv) > 1 else "bash"
+    # Optional: run on other ports (e.g. while another checkout is using 8000/8100/8200).
+    api, llm = os.environ.get("SV_API_PORT"), os.environ.get("LLM_PORT")
     script = []
     for i, b in enumerate(blocks()):
+        if api:
+            b = b.replace("127.0.0.1:8000", f"127.0.0.1:{api}")
+        if llm:
+            b = b.replace("127.0.0.1:8200", f"127.0.0.1:{llm}")
         script.append(f'echo "### block {i}"')
         script.append(b)
         script.append(f'rc=$?; [ $rc -eq 0 ] || echo "### block {i} exit $rc"')
