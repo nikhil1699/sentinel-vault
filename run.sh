@@ -81,7 +81,7 @@ run_quiet() {
       printf '\r%s[%s]%s   %s  %ds ' "$C_INFO" "${frames:$((i % 4)):1}" "$C_OFF" "$label" \
         "$((SECONDS - start))"
     elif (( i > 0 && i % 100 == 0 )); then
-      info "$label… still working ($((SECONDS - start))s)"
+      info "${label}... still working ($((SECONDS - start))s)"
     fi
     i=$((i + 1)); sleep 0.1
   done
