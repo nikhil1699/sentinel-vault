@@ -76,6 +76,8 @@ run_quiet() {
   fi
   "$@" >"$log" 2>&1 &
   local pid=$! start=$SECONDS i=0 frames='|/-\'
+  # If this script exits for any reason (error, Ctrl-C), don't leave the job running.
+  trap 'kill '"$pid"' 2>/dev/null || true' EXIT INT TERM
   while kill -0 "$pid" 2>/dev/null; do
     if [[ $TTY == 1 ]]; then
       printf '\r%s[%s]%s   %s  %ds ' "$C_INFO" "${frames:$((i % 4)):1}" "$C_OFF" "$label" \
@@ -86,7 +88,10 @@ run_quiet() {
     i=$((i + 1)); sleep 0.1
   done
   [[ $TTY == 1 ]] && printf '\r\033[K'
-  wait "$pid"
+  local rc=0
+  wait "$pid" || rc=$?
+  trap - EXIT INT TERM
+  return "$rc"
 }
 
 find_python() {
