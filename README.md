@@ -8,39 +8,61 @@ for authorized users, and send only de-identified context to an external LLM.
 
 Only prerequisite: **Python 3.12** (macOS or Linux). No Docker, AWS account or API keys.
 
+### Best way to see it: the tour
+
 ```bash
-./run.sh            # install, start 3 services, seed 10 tenants, smoke test (~2 min first run)
-./run.sh customer new my-clinic   # then follow docs/TRY-IT-YOURSELF.md (copy-paste curl)
-./run.sh tour       # the whole project end to end, narrated + checked; Enter between chapters
-                    #   --auto hands-free, --fresh starts from zero (setup included), --fast no pauses
-./run.sh demo       # 13-step walkthrough: BYOK → store → retrieve → query → rotate → contain → revoke
-./run.sh attack     # 4 threat actors, 11 live attacks, pass/fail table; exits 1 on any breach
+./run.sh tour --fresh
+```
+
+One command does everything. It sets up from zero, starts the 3 services and seeds 10
+tenants. Then it walks through the whole project in 11 chapters: BYOK signup → login and
+sessions → store → retrieve → agentic query → audit log → key rotation → containment →
+crypto-shred → live attacks → 10 tenants at once.
+
+Every step is a real API call, shown with its output and checked. After each chapter it
+says what it did and what comes next, then waits for Enter. It ends with a scoreboard
+(28 checks) and saves a transcript to `.run/tour-<time>.log`.
+
+| Option | What |
+|---|---|
+| `./run.sh tour` | tour only, on already-running services (~70 s plus your reading time) |
+| `--auto` | hands-free, no Enter between chapters |
+| `--fresh` | wipe local demo data and set up from zero first (~3 min) |
+| `--fast` | no pauses between steps |
+
+### Try it yourself (copy-paste API calls)
+
+To drive the API by hand, follow **[docs/TRY-IT-YOURSELF.md](docs/TRY-IT-YOURSELF.md)**.
+Each block there can be pasted into bash or zsh as is, and needs only `curl`.
+
+```bash
+./run.sh                          # start everything (~2 min the first time)
+./run.sh customer new my-clinic   # your own customer: key vault account, master key, policy, users
+./run.sh password my-clinic admin # its admin password
+```
+
+Swagger: [API](http://127.0.0.1:8000/docs) · [Customer KMS](http://127.0.0.1:8100/docs) ·
+[Mock LLM](http://127.0.0.1:8200/docs). Logins for the seeded tenants are in
+`.secrets/reviewer-credentials.txt`. Everything binds `127.0.0.1` only.
+
+### All commands
+
+```bash
+./run.sh            # install, start 3 services, seed 10 tenants, smoke test
+./run.sh tour       # guided end-to-end tour (see above)
+./run.sh demo       # 13-step walkthrough on one tenant (--pause: Enter between steps)
+./run.sh attack     # 4 threat actors, 11 live attacks, pass/fail; exits 1 on any breach
 ./run.sh simulate   # 10 tenants × 3 users × 2 sessions querying at once; checks isolation
-./run.sh test       # 398 tests (unit, integration, attack suites), no services needed
-./run.sh verify     # ruff + mypy --strict + tests + coverage gate (≥ 85%, currently ~97%)
+./run.sh customer new|rotate|disable|enable|describe|audit <tenant>   # customer-side actions
+./run.sh password <tenant> <user>
+./run.sh test       # 402 tests (unit, integration, attack suites), no services needed
+./run.sh verify     # ruff + mypy --strict + tests + coverage gate (≥ 85%, currently ~94%)
 ./run.sh logs       # follow all service logs, readable (already redacted)
 ./run.sh stop       # stop services        ./run.sh reset   # delete all data and keys
 ```
 
-Output: every setup step is numbered with elapsed time (`[3/8] Python packages (+12s)`),
-long steps show a spinner, the demo explains each step ("what's happening" / "✔ proves")
-and `./run.sh demo --pause` waits for Enter between steps — good for presenting.
 Add `--verbose` to any command for full pip / spaCy / pytest output. Colors turn off
 when output is piped or `NO_COLOR=1` is set.
-
-Logins for the seeded tenants: `.secrets/reviewer-credentials.txt`.
-Swagger: [API](http://127.0.0.1:8000/docs) · [Customer KMS](http://127.0.0.1:8100/docs) ·
-[Mock LLM](http://127.0.0.1:8200/docs). Everything binds `127.0.0.1` only.
-
-Try it by hand (replace the password from the credentials file):
-
-```bash
-TOKEN=$(curl -s localhost:8000/auth/login -H 'content-type: application/json' \
-  -d '{"tenant_id":"st-marys-hospital","username":"admin","password":"<pw>"}' | jq -r .token)
-curl -s localhost:8000/query -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
-  -d '{"question":"Who was seen for asthma?","reidentify":true}' | jq
-curl -s localhost:8200/v1/received | jq   # what the "external" LLM actually got
-```
 
 ## 1. What I built, and what I cut
 
