@@ -175,3 +175,24 @@ async def test_tour_runs_every_chapter_and_all_checks_pass(stack: Stack) -> None
     llm_part = text.split("EVERYTHING the external LLM received")[1].split("✔ no raw PII")[0]
     for v in tour.RAW:
         assert v not in llm_part, v
+
+
+async def test_cli_customer_and_password_helpers(stack: Stack) -> None:
+    from reviewer_kit import cli
+
+    msg = await cli.new_customer(stack, "my-clinic")
+    assert "onboarded" in msg and "cmk_" in msg
+    assert "already exists" in await cli.new_customer(stack, "my-clinic")
+    pw = cli.password(stack, "my-clinic", "admin")
+    assert pw and cli.password(stack, "nope-clinic", "admin") is None
+    r = await stack.api.post("/auth/login", json={"tenant_id": "my-clinic",
+                                                  "username": "admin", "password": pw})
+    assert r.status_code == 200
+    assert "rotated to v2" in await cli.key_action(stack, "rotate", "my-clinic")
+    assert '"current_version": 2' in await cli.key_action(stack, "describe", "my-clinic")
+    assert "DISABLED" in await cli.key_action(stack, "disable", "my-clinic")
+    assert "refused" in await cli.key_action(stack, "rotate", "my-clinic")  # disabled key
+    assert "enabled again" in await cli.key_action(stack, "enable", "my-clinic")
+    audit = await cli.key_action(stack, "audit", "my-clinic")
+    assert "RotateKey" in audit and "hash chain intact" in audit
+    assert "no customer" in await cli.key_action(stack, "audit", "ghost-clinic")
