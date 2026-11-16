@@ -13,10 +13,17 @@ Only prerequisite: **Python 3.12** (macOS or Linux). No Docker, AWS account or A
 ./run.sh demo       # 13-step walkthrough: BYOK → store → retrieve → query → rotate → contain → revoke
 ./run.sh attack     # 4 threat actors, 11 live attacks, pass/fail table; exits 1 on any breach
 ./run.sh simulate   # 10 tenants × 3 users × 2 sessions querying at once; checks isolation
-./run.sh test       # 384 tests (unit, integration, attack suites), no services needed
+./run.sh test       # 397 tests (unit, integration, attack suites), no services needed
 ./run.sh verify     # ruff + mypy --strict + tests + coverage gate (≥ 85%, currently ~97%)
+./run.sh logs       # follow all service logs, readable (already redacted)
 ./run.sh stop       # stop services        ./run.sh reset   # delete all data and keys
 ```
+
+Output: every setup step is numbered with elapsed time (`[3/8] Python packages (+12s)`),
+long steps show a spinner, the demo explains each step ("what's happening" / "✔ proves")
+and `./run.sh demo --pause` waits for Enter between steps — good for presenting.
+Add `--verbose` to any command for full pip / spaCy / pytest output. Colors turn off
+when output is piped or `NO_COLOR=1` is set.
 
 Logins for the seeded tenants: `.secrets/reviewer-credentials.txt`.
 Swagger: [API](http://127.0.0.1:8000/docs) · [Customer KMS](http://127.0.0.1:8100/docs) ·

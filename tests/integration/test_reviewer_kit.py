@@ -116,3 +116,46 @@ async def test_demo_runs_every_step(stack: Stack) -> None:
     for v in ("Marlowe", "123-45-6789", "555-0134", "maria.m@example.org"):
         assert v not in sent, v
     assert "tenant_key_unavailable" in text
+
+
+# --- console output (what someone running the scripts sees) -------------------------------
+
+
+async def test_seed_prints_one_line_per_customer(stack: Stack) -> None:
+    lines: list[str] = []
+    await seed.seed(stack, count=3, docs=1, out=lines.append)
+    assert len(lines) == 3 and all(" onboarded + 2 records" in x for x in lines)
+    assert {x.split()[1] for x in lines} == {"1/3", "2/3", "3/3"}
+    again: list[str] = []
+    await seed.seed(stack, count=3, docs=1, out=again.append)
+    assert all("already seeded" in x for x in again)
+
+
+async def test_attack_prints_legend_and_live_results(stack: Stack) -> None:
+    lines: list[str] = []
+    outcomes = await attack.run_attacks(stack, lines.append)
+    text = "\n".join(lines)
+    for actor, blurb in attack.ACTORS.items():
+        if actor != "A0 test":
+            assert actor in text and blurb in text
+    assert text.count("DEFENDED") == len(outcomes) and "BREACHED" not in text
+
+
+async def test_simulate_prints_progress(stack: Stack) -> None:
+    await seed.seed(stack, count=2, docs=1)
+    lines: list[str] = []
+    r = await simulate.simulate(stack, count=2, out=lines.append)
+    text = "\n".join(lines)
+    assert r.failures == []
+    assert "[ok]   logins 12/12" in text and "[ok]   queries 12/12" in text
+    assert "logging out one" in text
+
+
+async def test_demo_explains_each_step_and_can_pause(stack: Stack) -> None:
+    lines: list[str] = []
+    pauses: list[int] = []
+    await demo.demo(stack, lines.append, pause=lambda: pauses.append(1))
+    text = "\n".join(lines)
+    assert text.count("what's happening:") == demo.TOTAL
+    assert text.count("✔ proves:") == demo.TOTAL
+    assert len(pauses) == demo.TOTAL - 1

@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import random
 import sys
+from collections.abc import Callable
 from typing import Any, Final
 
 from faker import Faker
 
 from reviewer_kit.common import Customer, Stack, live_stack, load_customer, provision_customer
+from reviewer_kit.ui import fail, info, ok, paint
 from sentinel_vault.security.files import write_exclusive
 
 CUSTOMERS: Final[list[tuple[str, str]]] = [
@@ -82,9 +84,25 @@ async def seed_customer(stack: Stack, idx: int, docs: int) -> tuple[Customer, bo
     return c, True
 
 
-async def seed(stack: Stack, count: int = 10, docs: int = 8) -> list[tuple[Customer, bool]]:
-    """Seed customers concurrently (exercises concurrent onboarding and ingest)."""
-    return list(await asyncio.gather(*(seed_customer(stack, i, docs) for i in range(count))))
+async def seed(stack: Stack, count: int = 10, docs: int = 8,
+               out: Callable[[str], None] | None = None) -> list[tuple[Customer, bool]]:
+    """Seed customers concurrently (exercises concurrent onboarding and ingest).
+
+    ``out`` gets one line per finished customer, in completion order.
+    """
+    finished = 0
+
+    async def one(i: int) -> tuple[Customer, bool]:
+        nonlocal finished
+        c, created = await seed_customer(stack, i, docs)
+        finished += 1
+        if out is not None:
+            kind = CUSTOMERS[i][1]
+            what = (f"onboarded + {docs + 1} records" if created else "already seeded")
+            out(ok(f"{finished:>2}/{count}  {c.tenant:<22} {paint(kind, 'dim'):<16} {what}"))
+        return c, created
+
+    return list(await asyncio.gather(*(one(i) for i in range(count))))
 
 
 def credentials_table(results: list[tuple[Customer, bool]]) -> str:
@@ -96,15 +114,17 @@ def credentials_table(results: list[tuple[Customer, bool]]) -> str:
 
 
 async def _main() -> int:
+    print(info("each customer: KMS account → CMK → key policy (our service, their tenant only)"))
+    print(info("→ we probe the key → 3 users → synthetic PHI records, all at once"))
     async with live_stack() as stack:
-        results = await seed(stack)
+        results = await seed(stack, out=print)
         new = sum(created for _, created in results)
         table = credentials_table(results)
         out = stack.secrets_dir / "reviewer-credentials.txt"
         out.unlink(missing_ok=True)
         write_exclusive(out, (table + "\n").encode(), 0o600)
-    print(f"[ok]   seed: {new} new, {len(results) - new} already present "
-          f"(logins in {out})")
+    print(ok(f"seed: {new} new, {len(results) - new} already present "
+             f"(logins in {out})"))
     return 0
 
 
@@ -112,6 +132,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(asyncio.run(_main()))
     except Exception as exc:  # noqa: BLE001 - top-level CLI message
-        print(f"[fail] seed: {type(exc).__name__} — see .run/logs/sentinel-api.log",
-              file=sys.stderr)
+        print(fail(f"seed: {type(exc).__name__} — see ./run.sh logs"), file=sys.stderr)
         raise SystemExit(1) from None

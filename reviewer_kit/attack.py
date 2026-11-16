@@ -27,6 +27,7 @@ from reviewer_kit.common import (
     provision_customer,
     set_llm_mode,
 )
+from reviewer_kit.ui import fail, info, ok, paint
 from sentinel_vault.domain.ids import DocumentId
 
 SSN, NAME = "123-45-6789", "Johnathan Q. Marlowe"
@@ -208,20 +209,47 @@ async def a4_admin(c: Ctx) -> tuple[bool, str]:
     return False, "disabled the customer's key"
 
 
-async def run_attacks(stack: Stack) -> list[Outcome]:
+ACTORS: dict[str, str] = {
+    "A1 malicious tenant": "a paying customer who tries to read another customer's records",
+    "A2 storage insider": "someone with read/write access to our database files (not the KMS)",
+    "A3 data smuggler": "plants poisoned documents to push raw PHI through to the LLM",
+    "A4 rogue KMS caller": "abuses our signed access to a customer's key vault",
+    "A0 test": "test-only actor",
+}
+
+
+def outcome_line(o: Outcome) -> str:
+    verdict = paint("DEFENDED", "green", "bold") if o.defended else \
+        paint("BREACHED", "red", "bold")
+    return f"  {verdict}  {o.attack}\n            {paint(o.detail, 'dim')}"
+
+
+async def run_attacks(stack: Stack,
+                      out: Callable[[str], None] | None = None) -> list[Outcome]:
+    """Run every check. ``out`` (if given) gets a legend per actor and a line per result."""
+    say = out or (lambda _s: None)
+    say(info("setting up a fresh victim tenant and attacker tenant (seeded data untouched)"))
     victim = await provision_customer(stack, disposable("atk-victim"))
     evil = await provision_customer(stack, disposable("atk-evil"))
     r = await stack.api.post("/documents", headers=victim.h(), json=VICTIM_RECORD)
     r.raise_for_status()
+    say(ok(f"victim {victim.tenant} stored a patient record; attacker is {evil.tenant}"))
     ctx = Ctx(stack, victim, evil, r.json()["doc_id"])
-    out = []
+    results = []
+    current = ""
     for actor, attack, fn in CHECKS:
+        if actor != current:
+            current = actor
+            say("")
+            say(paint(actor, "bold") + paint(f" — {ACTORS.get(actor, '')}", "dim"))
         try:
-            ok, detail = await fn(ctx)
+            defended, detail = await fn(ctx)
         except Exception as exc:  # noqa: BLE001 - any crash counts as not defended
-            ok, detail = False, f"runner error {type(exc).__name__}"
-        out.append(Outcome(actor, attack, ok, detail))
-    return out
+            defended, detail = False, f"runner error {type(exc).__name__}"
+        o = Outcome(actor, attack, defended, detail)
+        results.append(o)
+        say(outcome_line(o))
+    return results
 
 
 def report(outcomes: list[Outcome]) -> str:
@@ -236,12 +264,19 @@ def report(outcomes: list[Outcome]) -> str:
 
 
 async def _main() -> int:
+    print(paint("Attack run: 4 threat actors vs. the live services", "bold"))
+    print(paint("  the mock LLM is switched to 'obedient' for A3: it follows every injected "
+                "instruction", "dim"))
     async with live_stack() as stack:
-        outcomes = await run_attacks(stack)
-    print(report(outcomes))
-    return 0 if all(o.defended for o in outcomes) else 1
+        outcomes = await run_attacks(stack, print)
+    n = sum(o.defended for o in outcomes)
+    print()
+    if n == len(outcomes):
+        print(ok(f"{n}/{len(outcomes)} attacks defended"))
+        return 0
+    print(fail(f"{len(outcomes) - n} of {len(outcomes)} attacks got through (BREACHED above)"))
+    return 1
 
 
 if __name__ == "__main__":
     raise SystemExit(asyncio.run(_main()))
-
