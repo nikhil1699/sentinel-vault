@@ -251,3 +251,28 @@ reviewer_kit/        seed, demo, attack, simulate (same code runs live and in te
 tests/               unit/ integration/ attacks/
 docs/                milestone summaries        PLAN.md   design plan
 ```
+
+
+## 8. A known meaningful security failure
+Our end-to-end test found a real PHI leak across the LLM boundary. The record said "Zelda Quint has asthma," and spaCy (the name finder inside Presidio) did not tag "Zelda Quint" as a person. So the name stayed in the tokenized chunk. It was still encrypted on disk, so disk, logs and other tenants were never at risk. But when a query pulled that chunk, every exit check missed it too. The second scan used the same model and made the same miss. 
+The strict regex check only knows fixed shapes like SSNs, emails and phone numbers, and a name has no fixed shape. So the external LLM got the patient's name. 
+
+We fixed the common case in two ways. First, any value the tenant marks sensitive, like patient_name, is now also swapped for a token wherever it shows up in the record's text. 
+
+Second, questions and outbound text are checked against the tenant's own token vault without decrypting anything. That lookup hashes each 1–4 word window and asks whether that token already exists. The gap that remains is a name that appears only in free text, never in a field, and that the model misses. Closing it would mean two different name-finding models, a strict "tokenize every unknown capitalized word" mode, or an LLM provider under a health-data contract. 
+
+The lesson is that detection is never perfect. The real control is layers of defense, plus knowing which layer has no backstop.
+
+
+
+## 9. A major architectural decision
+
+We had to choose how many data keys (DEKs) to make and how often to call the customer's key vault. A key per chunk keeps the damage from a leaked key to one chunk. But an agent pulls about 50 chunks per prompt, so that would mean 50 vault calls per prompt, which is slow, costly and easy to throttle. 
+
+We chose one DEK per tenant, workspace and purpose, the way S3 Bucket Keys work. We keep the plain DEK in memory for up to 5 minutes or 10,000 uses, then zero it. 
+
+Now a cold query costs at most 3 vault calls and a warm one costs none. The customer keeps full control, because every DEK is still wrapped by their master key, and their key policy checks tenant_id. 
+
+The price is two trade-offs we chose on purpose. First, one leaked DEK exposes a whole workspace's data for that key's lifetime. We limit that by rolling DEKs at 1M uses or 24 hours, using separate keys for documents, vectors, the vault and tokens, and having a containment path that re-keys and re-encrypts a tenant.
+
+Second, a customer's revoke can take up to 5 minutes to propagate. A flush endpoint makes it instant, and a cache time of 0 removes the gap at the cost of one vault call per query. That 5-minute gap is the call I am least sure about. A strict customer could fairly want 0 as the default.
